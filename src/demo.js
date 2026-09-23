@@ -5,7 +5,7 @@ export function createDemo(){
  const add=(s,type,p)=>{const e=makeElement(type,p);s.elements.push(e);return e;};
  const text=(s,text,x,y,w,h,size=28,p={})=>add(s,'text',{text,x,y,w,h,fontSize:size,padding:0,...p});
  const rect=(s,x,y,w,h,fill,p={})=>add(s,'rect',{x,y,w,h,fill,...p});
- const foot=(s,n,light=false)=>{rect(s,80,641,1120,1,light?'@muted':'@line');text(s,'AURELIA  /  IDEAS IN MOTION',80,662,780,25,13,{fill:light?'@secondary':'@muted'});text(s,String(n).padStart(2,'0'),1120,660,78,28,15,{align:'right',fill:light?'@secondary':'@muted'});};
+ const foot=(s,n,light=false)=>{rect(s,80,641,1120,1,light?'@muted':'@line');text(s,'PRESENTATIONS  /  IDEAS IN MOTION',80,662,780,25,13,{fill:light?'@secondary':'@muted'});text(s,String(n).padStart(2,'0'),1120,660,78,28,15,{align:'right',fill:light?'@secondary':'@muted'});};
  let s=slide('The shape of what’s next');
  text(s,'A NEW PERSPECTIVE     /     2026',82,66,750,30,17,{fill:'@muted'});
  text(s,'The shape of\nwhat’s next.',77,210,720,218,88,{bold:true,lineHeight:1.06,name:'Presentation title'});

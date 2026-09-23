@@ -32,7 +32,7 @@ export function makeDocument() { return {format:'aurelia',version:VERSION,id:uid
 const VALID_TYPES=new Set(['rect','roundRect','ellipse','triangle','diamond','arrow','star','line','text','image','chart','table']);
 const VALID_COLORS=/^(?:@[a-z]+|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|none)$/;
 export function validateDocument(raw) {
-  if(!raw||raw.format!=='aurelia'||raw.version!==VERSION)throw new Error('This is not a supported Aurelia presentation.');
+  if(!raw||raw.format!=='aurelia'||raw.version!==VERSION)throw new Error('This is not a supported presentation file.');
   if(!Array.isArray(raw.slides)||raw.slides.length<1||raw.slides.length>500)throw new Error('A presentation must contain 1–500 slides.');
   const d=makeDocument(); d.id=String(raw.id||d.id);d.title=String(raw.title||'Untitled presentation').slice(0,200);d.width=clamp(Number(raw.width)||1280,320,4096);d.height=clamp(Number(raw.height)||720,240,4096);d.theme=THEMES[raw.theme]?raw.theme:'studio';
   const seen=new Set();
