@@ -128,8 +128,11 @@ function validateGrounding(element, annotations, seen=new Set()) {
   const text=elementText(element);
   return annotations.map(annotation=>{
     if(!annotation||!validIdentity(annotation.id)||seen.has(annotation.id))throw new Error('Grounding annotation IDs must be unique.');
-    if(!Number.isInteger(annotation.start)||!Number.isInteger(annotation.end)||annotation.start<0||annotation.end<=annotation.start||annotation.end>text.length||typeof annotation.quote!=='string'||annotation.quote.length>32000||text.slice(annotation.start,annotation.end)!==annotation.quote)
-      throw new Error('Grounding annotation does not match its quoted UTF-16 span.');
+    if(!Number.isInteger(annotation.start)||!Number.isInteger(annotation.end)||annotation.start<0||annotation.end<=annotation.start||annotation.end>text.length||typeof annotation.quote!=='string'||!annotation.quote.length||annotation.quote.length>32000||text.slice(annotation.start,annotation.end)!==annotation.quote){
+      const start=typeof annotation.quote==='string'&&annotation.quote.length?text.indexOf(annotation.quote):-1;
+      const hint=start<0?'The quote is absent from the target object; inspect its current text.':text.indexOf(annotation.quote,start+1)>=0?'The quote occurs more than once; inspect the target and select the intended occurrence.':`The exact quote occurs at UTF-16 [${start}, ${start+annotation.quote.length}); resubmit the intended annotation with those offsets.`;
+      throw new Error(`Grounding annotation ${annotation.id} does not match its quoted UTF-16 span. ${hint}`);
+    }
     if(!Array.isArray(annotation.claim_ids)||!annotation.claim_ids.length||annotation.claim_ids.length>12||annotation.claim_ids.some(id=>!validIdentity(id))||new Set(annotation.claim_ids).size!==annotation.claim_ids.length)
       throw new Error('Invalid grounding claims.');
     if(!['supports','derived'].includes(annotation.relation))throw new Error('Invalid grounding relation.');
