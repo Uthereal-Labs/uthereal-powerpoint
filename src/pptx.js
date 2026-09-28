@@ -1,4 +1,4 @@
-import {makeDocument,makeElement,makeSlide,validateDocument,color,clamp,escapeHTML} from './core.js';
+import {makeDocument,makeElement,makeSlide,validateDocument,stripGrounding,importExternalDocument,color,clamp,escapeHTML} from './core.js';
 import {expandElement,paintSlide2D,ImagePool} from './renderer.js';
 /** ZIP + PresentationML interchange. No network, macros, executable content or external relationships. */
 const UTF8=new TextEncoder();
@@ -81,7 +81,7 @@ export async function exportPPTX(doc){
  }
  files['ppt/_rels/presentation.xml.rels']=xmlRels(presentationRels);files['_rels/.rels']=xmlRels([['rId1','officeDocument','ppt/presentation.xml'],['rId2','http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties','docProps/core.xml'],['rId3','https://aurelia.slides/document','aurelia/document.json']]);
  part('docProps/core.xml',`<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${xmlEsc(doc.title)}</dc:title><dc:creator>Presentations</dc:creator><dc:description>Created with Presentations. Editable vector shapes and text.</dc:description></cp:coreProperties>`,'application/vnd.openxmlformats-package.core-properties+xml');
- files['aurelia/document.json']=JSON.stringify(doc);
+ files['aurelia/document.json']=JSON.stringify(stripGrounding(doc));
  files['[Content_Types].xml']=XML_HEAD+`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="json" ContentType="application/json"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/>${parts.map(([p,t])=>`<Override PartName="/${p}" ContentType="${t}"/>`).join('')}</Types>`;
  return new Blob([await zipStore(files).arrayBuffer()],{type:'application/vnd.openxmlformats-officedocument.presentationml.presentation'});
 }
@@ -92,7 +92,7 @@ function parseXML(bytes){const x=new DOMParser().parseFromString(new TextDecoder
 function resolvePart(base,target){const segments=(base.slice(0,base.lastIndexOf('/')+1)+target).split('/'),result=[];for(const s of segments){if(s==='..')result.pop();else if(s!=='.'&&s)result.push(s);}return result.join('/');}
 export async function importPPTX(buffer){
  const files=await unzipSafe(buffer),warnings=new Set();
- if(files.has('aurelia/document.json'))return{doc:validateDocument(JSON.parse(new TextDecoder().decode(files.get('aurelia/document.json')))),warnings:[]};
+ if(files.has('aurelia/document.json'))return{doc:importExternalDocument(JSON.parse(new TextDecoder().decode(files.get('aurelia/document.json')))),warnings:[]};
  if(!files.has('ppt/presentation.xml'))throw new Error('This ZIP does not contain a PowerPoint presentation.');
  const doc=makeDocument(),root=parseXML(files.get('ppt/presentation.xml')),sz=firstNamed(root,'sldSz');doc.width=(+sz?.getAttribute('cx')||12192000)/9525;doc.height=(+sz?.getAttribute('cy')||6858000)/9525;doc.slides=[];
  const relsFor=path=>{const slash=path.lastIndexOf('/'),relPath=path.slice(0,slash+1)+'_rels/'+path.slice(slash+1)+'.rels';if(!files.has(relPath))return new Map();return new Map(allNamed(parseXML(files.get(relPath)),'Relationship').filter(r=>r.getAttribute('TargetMode')!=='External').map(r=>[r.getAttribute('Id'),{path:resolvePart(path,r.getAttribute('Target')),type:r.getAttribute('Type')}]));};
