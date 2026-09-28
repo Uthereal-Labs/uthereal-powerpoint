@@ -1,5 +1,7 @@
 /** Aurelia document/geometry/command kernel. No browser or renderer dependencies. */
 export const VERSION = 1;
+export const GROUNDING_CONTRACT = 2;
+export const GROUNDING_CAPABILITY = 'grounding_lifecycle_v2';
 export const THEMES = {
   studio: { name:'Terracotta', bg:'#F5F2EC', ink:'#17313A', dark:'#17313A', light:'#F5F2EC', accent:'#DA735B', secondary:'#A5B8AF', muted:'#71827F', line:'#DDDCD4' },
   midnight: { name:'Midnight', bg:'#EDF0F7', ink:'#202941', dark:'#202941', light:'#EDF0F7', accent:'#8992DF', secondary:'#B4C9E2', muted:'#7B829A', line:'#D3D7E4' },
@@ -14,7 +16,7 @@ export const color = (value,theme='studio') => value?.startsWith('@') ? (THEMES[
 export const escapeHTML = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function makeElement(type='rect', props={}) {
   return { id:uid(), type, name:({text:'Text box',rect:'Rectangle',roundRect:'Rounded rectangle',ellipse:'Ellipse',line:'Line',triangle:'Triangle',diamond:'Diamond',arrow:'Arrow',star:'Star',image:'Picture',chart:'Chart',table:'Table'})[type]||type,
-    x:100,y:100,w:320,h:160,rotation:0,opacity:1,fill:'@accent',stroke:'none',strokeWidth:0,radius:22,locked:false,hidden:false,groupId:null,animation:'none',
+    x:100,y:100,w:320,h:160,rotation:0,opacity:1,fill:'@accent',stroke:'none',strokeWidth:0,radius:22,locked:false,hidden:false,groupId:null,animation:'none',grounding:[],
     ...(type==='text'?{text:'Your next great idea',fill:'@ink',fontFamily:'Arial',fontSize:40,bold:false,italic:false,underline:false,align:'left',valign:'top',lineHeight:1.2,padding:4}:{}),...props };
 }
 export function makeSlide(layout='blank', theme='studio') {
@@ -28,15 +30,73 @@ export function makeSlide(layout='blank', theme='studio') {
   if(layout==='quote') s.elements=[makeElement('text',{x:90,y:110,w:180,h:180,text:'“',fontSize:180,fill:'@accent',fontFamily:'Georgia'}),makeElement('text',{name:'Quote',x:120,y:270,w:1000,h:240,text:'Great stories make\ncomplex ideas feel simple.',fontSize:64,fontFamily:'Georgia'}),makeElement('text',{x:125,y:570,w:700,h:50,text:'YOUR NAME  /  YOUR PERSPECTIVE',fontSize:18,fill:'@muted'})];
   return s;
 }
-export function makeDocument() { return {format:'aurelia',version:VERSION,id:uid('deck'),title:'Untitled presentation',width:1280,height:720,theme:'studio',slides:[makeSlide('title')]}; }
+export function makeDocument() { return {format:'aurelia',version:VERSION,grounding_contract:GROUNDING_CONTRACT,id:uid('deck'),title:'Untitled presentation',width:1280,height:720,theme:'studio',slides:[makeSlide('title')]}; }
+// String indices are UTF-16 offsets, including astral characters and newlines.
+export function elementText(element) {
+  if(element.type==='text')return String(element.text??'');
+  if(element.type==='table')return element.cells.map(row=>row.join('\t')).join('\n');
+  return '';
+}
+function contentSignature(element) {
+  return element.type==='table'?JSON.stringify(element.cells):elementText(element);
+}
+const validIdentity=value=>typeof value==='string'&&value.length>0&&value.length<=200;
+export function validateGroundingOrigin(origin) {
+  if(!origin||typeof origin!=='object'||Array.isArray(origin))throw new Error('Invalid grounding origin.');
+  if(origin.kind==='saved'&&validIdentity(origin.revision_id)&&validIdentity(origin.association_id))
+    return {kind:'saved',revision_id:origin.revision_id,association_id:origin.association_id};
+  if(origin.kind==='agent'&&validIdentity(origin.job_id)&&Number.isInteger(origin.steering_revision)&&origin.steering_revision>=0&&Number.isInteger(origin.sequence)&&origin.sequence>=0&&validIdentity(origin.declaration_id))
+    return {kind:'agent',job_id:origin.job_id,steering_revision:origin.steering_revision,sequence:origin.sequence,declaration_id:origin.declaration_id};
+  throw new Error('Invalid grounding origin.');
+}
+export function validateGrounding(element, annotations, seen=new Set()) {
+  if(!Array.isArray(annotations)||annotations.length>2000)throw new Error('Invalid grounding annotations.');
+  if(annotations.length&&!['text','table'].includes(element.type))throw new Error('Only text and table objects can contain grounding.');
+  const text=elementText(element);
+  return annotations.map(annotation=>{
+    if(!annotation||!validIdentity(annotation.id)||seen.has(annotation.id))throw new Error('Grounding annotation IDs must be unique.');
+    if(!Number.isInteger(annotation.start)||!Number.isInteger(annotation.end)||annotation.start<0||annotation.end<=annotation.start||annotation.end>text.length||typeof annotation.quote!=='string'||!annotation.quote.length||annotation.quote.length>32000||text.slice(annotation.start,annotation.end)!==annotation.quote){
+      const start=typeof annotation.quote==='string'&&annotation.quote.length?text.indexOf(annotation.quote):-1;
+      const hint=start<0?'The quote is absent from the target object; inspect its current text.':text.indexOf(annotation.quote,start+1)>=0?'The quote occurs more than once; inspect the target and select the intended occurrence.':`The exact quote occurs at UTF-16 [${start}, ${start+annotation.quote.length}); resubmit the intended annotation with those offsets.`;
+      throw new Error(`Grounding annotation ${annotation.id} does not match its quoted UTF-16 span. ${hint}`);
+    }
+    if(!Array.isArray(annotation.claim_ids)||!annotation.claim_ids.length||annotation.claim_ids.length>12||annotation.claim_ids.some(id=>!validIdentity(id))||new Set(annotation.claim_ids).size!==annotation.claim_ids.length)
+      throw new Error('Invalid grounding claims.');
+    if(!['supports','derived'].includes(annotation.relation))throw new Error('Invalid grounding relation.');
+    const origin=validateGroundingOrigin(annotation.origin);seen.add(annotation.id);if(seen.size>2000)throw new Error('Presentation exceeds the 2,000-annotation limit.');
+    return {id:annotation.id,start:annotation.start,end:annotation.end,quote:annotation.quote,claim_ids:[...annotation.claim_ids],relation:annotation.relation,origin};
+  });
+}
+// Exported Office packages and clipboard payloads never expose evidence metadata.
+export function stripGrounding(doc,{keepContract=false}={}) {
+  const out=clone(doc);if(!keepContract)delete out.grounding_contract;
+  for(const slide of out.slides)for(const element of slide.elements){if(keepContract)element.grounding=[];else delete element.grounding;}
+  return out;
+}
+export function copyElements(elements,{retainGrounding=true,offset=0,unlock=false}={}) {
+  const groups=new Map();return clone(elements).map(element=>{
+    element.id=uid();element.x+=offset;element.y+=offset;if(unlock)element.locked=false;
+    element.grounding=retainGrounding?(element.grounding||[]).map(annotation=>({...annotation,id:uid('a')})):[];
+    if(element.groupId){if(!groups.has(element.groupId))groups.set(element.groupId,uid('g'));element.groupId=groups.get(element.groupId);}
+    return element;
+  });
+}
+// External files are content imports. No submitted evidence association is trusted.
+export function importExternalDocument(raw) {
+  const out=clone(raw);out.grounding_contract=GROUNDING_CONTRACT;out.id=uid('deck');
+  if(!Array.isArray(out.slides))throw new Error('Invalid presentation slides.');
+  out.slides=out.slides.map(slide=>({...slide,id:uid('s'),elements:copyElements(slide.elements,{retainGrounding:false})}));
+  return validateDocument(out);
+}
 const VALID_TYPES=new Set(['rect','roundRect','ellipse','triangle','diamond','arrow','star','line','text','image','chart','table']);
 const VALID_COLORS=/^(?:@[a-z]+|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|none)$/;
 export function validateDocument(raw) {
-  if(!raw||raw.format!=='aurelia'||raw.version!==VERSION)throw new Error('This is not a supported presentation file.');
+  if(!raw||raw.format!=='aurelia'||raw.version!==VERSION||raw.grounding_contract!==GROUNDING_CONTRACT)throw new Error('Incompatible presentation format: grounding contract 2 is required.');
   if(!Array.isArray(raw.slides)||raw.slides.length<1||raw.slides.length>500)throw new Error('A presentation must contain 1–500 slides.');
   const d=makeDocument(); d.id=String(raw.id||d.id);d.title=String(raw.title||'Untitled presentation').slice(0,200);d.width=clamp(Number(raw.width)||1280,320,4096);d.height=clamp(Number(raw.height)||720,240,4096);d.theme=THEMES[raw.theme]?raw.theme:'studio';
-  const seen=new Set();
-  function safeId(id){if(typeof id!=='string'||seen.has(id))id=uid();seen.add(id);return id;}
+  if(!validIdentity(raw.id))throw new Error('Invalid presentation identity.');
+  const seen=new Set([d.id]),annotationsSeen=new Set();
+  function safeId(id){if(!validIdentity(id)||seen.has(id))throw new Error('Presentation object IDs must be unique.');seen.add(id);return id;}
   const safeColor=(v,fallback)=>typeof v==='string'&&VALID_COLORS.test(v)?v:fallback;
   d.slides=raw.slides.map((s,index)=>{
     if(!Array.isArray(s.elements)||s.elements.length>5000)throw new Error(`Slide ${index+1} exceeds the 5,000-object limit.`);
@@ -51,7 +111,7 @@ export function validateDocument(raw) {
       if(e.type==='image'){if(typeof v.src!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v.src)||v.src.length>30000000)throw new Error('Pictures must be embedded PNG, JPEG or WebP files, at most 22 MB each.');e.src=v.src;e.fit=v.fit==='contain'?'contain':'cover';}
       if(e.type==='chart'){e.chartType=['bar','line','donut'].includes(v.chartType)?v.chartType:'bar';e.labels=(v.labels||['A','B','C']).slice(0,30).map(x=>String(x).slice(0,80));e.values=(v.values||[20,40,70]).slice(0,e.labels.length).map(x=>clamp(Number(x)||0,0,1e12));while(e.values.length<e.labels.length)e.values.push(0);e.showValues=v.showValues!==false;}
       if(e.type==='table'){if(!Array.isArray(v.cells)||!v.cells.length)throw new Error('Invalid table.');e.cells=v.cells.slice(0,30).map(r=>Array.isArray(r)?r.slice(0,12).map(c=>String(c).slice(0,1000)):['']);e.fontSize=clamp(+v.fontSize||22,8,100);}
-      return e;
+      e.grounding=validateGrounding(e,v.grounding,annotationsSeen);return e;
     });return out;
   });return d;
 }
@@ -84,7 +144,7 @@ export function snapMove(bounds,others,width,height,threshold=7) {
   return {dx:x.delta,dy:y.delta,lines:[...(x.line===null?[]:[{axis:'x',value:x.line}]),...(y.line===null?[]:[{axis:'y',value:y.line}])]};
 }
 export class Store {
-  constructor(doc=makeDocument()){this.doc=doc;this.active=doc.slides[0].id;this.selection=new Set();this.past=[];this.future=[];this.listeners=new Set();this.pending=null;this.revision=0;this.maxHistory=100;this.maxHistoryBytes=40*1024*1024;}
+  constructor(doc=makeDocument()){this.doc=doc;this.active=doc.slides[0].id;this.selection=new Set();this.past=[];this.future=[];this.listeners=new Set();this.pending=null;this.clipboard=null;this.revision=0;this.maxHistory=100;this.maxHistoryBytes=40*1024*1024;}
   get slide(){return this.doc.slides.find(s=>s.id===this.active)||this.doc.slides[0];}
   get selected(){return this.slide.elements.filter(e=>this.selection.has(e.id));}
   onChange(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn);}
@@ -92,20 +152,101 @@ export class Store {
   select(ids){this.selection=new Set(ids);this.emit('selection');}
   activate(id){if(!this.doc.slides.some(s=>s.id===id))return;this.active=id;this.selection.clear();this.emit('active');}
   snapshot(){return JSON.stringify({doc:this.doc,active:this.active});}
-  begin(label='Edit'){if(!this.pending)this.pending={label,before:this.snapshot()};}
-  commit(){if(!this.pending)return false;const {label,before}=this.pending;this.pending=null;const after=this.snapshot();if(before===after)return false;this.past.push({label,before,after});this.future=[];let size=this.past.reduce((n,x)=>n+x.before.length+x.after.length,0);while(this.past.length>1&&(this.past.length>this.maxHistory||size>this.maxHistoryBytes)){const x=this.past.shift();size-=x.before.length+x.after.length;}this.revision++;this.emit('commit');return true;}
+  begin(label='Edit'){if(!this.pending)this.pending={label,before:this.snapshot(),groundingAssignments:new Set()};}
+  commit(){if(!this.pending)return false;const {label,before,groundingAssignments}=this.pending;
+    const previous=new Map(JSON.parse(before).doc.slides.flatMap(slide=>slide.elements).map(element=>[element.id,element]));
+    for(const element of this.doc.slides.flatMap(slide=>slide.elements)){
+      const original=previous.get(element.id);
+      if(original&&contentSignature(original)!==contentSignature(element)&&!groundingAssignments.has(element.id))element.grounding=[];
+    }
+    this.pending=null;const after=this.snapshot();if(before===after)return false;this.past.push({label,before,after});this.future=[];let size=this.past.reduce((n,x)=>n+x.before.length+x.after.length,0);while(this.past.length>1&&(this.past.length>this.maxHistory||size>this.maxHistoryBytes)){const x=this.past.shift();size-=x.before.length+x.after.length;}this.revision++;this.emit('commit');return true;}
   cancel(){if(!this.pending)return;const snap=this.pending.before;this.pending=null;this.restore(snap);}
   transaction(label,fn){this.begin(label);try{fn(this.doc,this.slide);this.commit();}catch(e){this.cancel();throw e;}}
   restore(snapshot){const state=JSON.parse(snapshot);this.doc=state.doc;this.active=state.active;this.selection=new Set([...this.selection].filter(id=>this.slide.elements.some(e=>e.id===id)));this.revision++;this.emit('restore');}
   undo(){if(this.pending)this.commit();const cmd=this.past.pop();if(!cmd)return;this.future.push(cmd);this.restore(cmd.before);}
   redo(){const cmd=this.future.pop();if(!cmd)return;this.past.push(cmd);this.restore(cmd.after);}
-  replace(doc){this.transaction('Open presentation',()=>{this.doc=doc;this.active=doc.slides[0].id;this.selection.clear();});}
+  replace(doc){this.doc=validateDocument(doc);this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('restore');}
+  setElementContent(element,props){const before=contentSignature(element);Object.assign(element,props);if(contentSignature(element)!==before)element.grounding=[];}
+  inspectGrounding(objectIds=null){
+    if(objectIds!==null&&(!Array.isArray(objectIds)||objectIds.some(id=>!validIdentity(id))))throw new Error('Invalid grounding target IDs.');
+    const targets=objectIds===null?null:new Set(objectIds),units=[];
+    this.doc.slides.forEach((slide,slideIndex)=>slide.elements.forEach((element,elementIndex)=>{
+      if(['text','table'].includes(element.type)&&(!targets||targets.has(element.id)))units.push({object_id:element.id,text:elementText(element),grounding:clone(element.grounding),locations:[{slide_id:slide.id,slide_index:slideIndex,element_index:elementIndex,start:0,end:elementText(element).length}]});
+    }));return units;
+  }
+  assignGrounding(assignments){
+    if(!Array.isArray(assignments))throw new Error('Invalid grounding assignments.');
+    const assigned=new Set(),elements=new Map(this.doc.slides.flatMap(slide=>slide.elements).map(element=>[element.id,element]));
+    const seen=new Set(this.doc.slides.flatMap(slide=>slide.elements).filter(element=>!assignments.some(item=>item.object_id===element.id)).flatMap(element=>element.grounding.map(annotation=>annotation.id)));
+    const validated=assignments.map(item=>{
+      const element=elements.get(item.object_id);if(!element||assigned.has(item.object_id))throw new Error('Unknown or duplicate grounding target.');
+      assigned.add(item.object_id);return {element,annotations:validateGrounding(element,item.annotations,seen)};
+    });
+    const apply=()=>{for(const {element,annotations}of validated){element.grounding=annotations;this.pending.groundingAssignments.add(element.id);}};
+    if(this.pending)apply();else this.transaction('Assign grounding',apply);
+    return {assigned:validated.length};
+  }
+  copySelected(){
+    this.clipboard={handle:uid('clip'),artifact_id:this.doc.id,elements:clone(this.selected)};
+    // The public record contains content only. The opaque handle can recover the
+    // native record exclusively in this editor and artifact.
+    return JSON.stringify({handle:this.clipboard.handle,elements:this.clipboard.elements.map(element=>{const out=clone(element);delete out.grounding;return out;})});
+  }
+  pasteObjects(payload=null){
+    let record=this.clipboard,retainGrounding=record?.artifact_id===this.doc.id;
+    if(payload!==null){
+      const raw=JSON.parse(payload),handle=Array.isArray(raw)?null:raw.handle;
+      if(!record||handle!==record.handle||!retainGrounding){
+        const temp=makeDocument();temp.slides[0].elements=(Array.isArray(raw)?raw:raw.elements).map(element=>({...element,grounding:[]}));
+        record={elements:importExternalDocument(temp).slides[0].elements};retainGrounding=false;
+      }
+    }
+    if(!record?.elements.length)return [];
+    const elements=copyElements(record.elements,{retainGrounding,offset:28,unlock:true});
+    this.transaction('Paste objects',()=>this.slide.elements.push(...elements));this.select(elements.map(element=>element.id));return elements;
+  }
+  ackGrounding({receipts=[],invalidations=[],submitted_snapshot=null}={}){
+    const normalized=[...receipts.map(receipt=>({...receipt,origin:validateGroundingOrigin(receipt.origin)})),...invalidations.map(invalidation=>({...invalidation,invalidated:true}))].map(item=>{
+      if(!validIdentity(item.object_id)||!validIdentity(item.annotation_id)||!item.invalidated&&item.origin.kind!=='saved')throw new Error('Invalid grounding acknowledgement.');
+      return {...item,submitted_origin:validateGroundingOrigin(item.submitted_origin)};
+    });
+    const sameOrigin=(a,b)=>JSON.stringify(validateGroundingOrigin(a))===JSON.stringify(b);
+    const annotationSignature=annotation=>JSON.stringify({start:annotation.start,end:annotation.end,quote:annotation.quote,claim_ids:annotation.claim_ids,relation:annotation.relation});
+    const historicalDocs=[...(this.pending?[JSON.parse(this.pending.before).doc]:[]),...this.past.flatMap(entry=>[JSON.parse(entry.before).doc,JSON.parse(entry.after).doc]),...this.future.flatMap(entry=>[JSON.parse(entry.before).doc,JSON.parse(entry.after).doc]),this.doc];
+    const submittedDoc=submitted_snapshot?(typeof submitted_snapshot==='string'?JSON.parse(submitted_snapshot):submitted_snapshot):null;
+    const sourceElements=submittedDoc?(submittedDoc.doc||submittedDoc).slides.flatMap(slide=>slide.elements):[...historicalDocs.flatMap(doc=>doc.slides.flatMap(slide=>slide.elements)),...(this.clipboard?.elements||[])];
+    const submittedIds=submittedDoc?new Set(sourceElements.map(element=>element.id)):null;
+    const sources=new Map(normalized.map(item=>{
+      const element=sourceElements.find(element=>element.id===item.object_id&&element.grounding.some(annotation=>annotation.id===item.annotation_id&&sameOrigin(annotation.origin,item.submitted_origin)));
+      const annotation=element?.grounding.find(annotation=>annotation.id===item.annotation_id&&sameOrigin(annotation.origin,item.submitted_origin));
+      return [item,annotation?{text:contentSignature(element),annotation:annotationSignature(annotation)}:null];
+    }));
+    let updated=0;
+    const updateElements=elements=>{let changed=false;for(const element of elements){
+      element.grounding=element.grounding.filter(annotation=>{
+        // Copies have fresh IDs but retain the exact source association origin.
+        const matches=normalized.filter(item=>{const source=sources.get(item);return source&&sameOrigin(annotation.origin,item.submitted_origin)&&source.text===contentSignature(element)&&source.annotation===annotationSignature(annotation);});
+        const exact=matches.find(item=>item.object_id===element.id&&item.annotation_id===annotation.id);
+        // Only objects created while the save was in flight may inherit a
+        // source receipt. Submitted objects require their own exact selector.
+        const freshCopy=submittedIds&&!submittedIds.has(element.id);
+        const match=exact||(freshCopy&&(matches.find(item=>!item.invalidated)||matches[0]));if(!match)return true;
+        changed=true;updated++;if(match.invalidated)return false;annotation.origin=clone(match.origin);return true;
+      });
+    }return changed;};
+    const updateSnapshot=snapshot=>{const value=JSON.parse(snapshot);return updateElements(value.doc.slides.flatMap(slide=>slide.elements))?JSON.stringify(value):snapshot;};
+    updateElements(this.doc.slides.flatMap(slide=>slide.elements));
+    for(const entry of [...this.past,...this.future]){entry.before=updateSnapshot(entry.before);entry.after=updateSnapshot(entry.after);}
+    if(this.pending)this.pending.before=updateSnapshot(this.pending.before);
+    if(this.clipboard?.artifact_id===this.doc.id)updateElements(this.clipboard.elements);
+    if(updated)this.emit('grounding');return {updated};
+  }
   add(element){this.transaction(`Insert ${element.type}`,()=>this.slide.elements.push(element));this.select([element.id]);return element;}
   updateSelected(props,label='Format objects'){this.transaction(label,()=>{for(const e of this.selected)if(!e.locked)Object.assign(e,props);});}
   deleteSelected(){this.transaction('Delete objects',()=>{this.slide.elements=this.slide.elements.filter(e=>!this.selection.has(e.id)||e.locked);});this.select([]);}
-  duplicateSelected(){const groups=new Map(),els=clone(this.selected).filter(e=>!e.locked).map(e=>{e.id=uid();e.x+=24;e.y+=24;if(e.groupId){if(!groups.has(e.groupId))groups.set(e.groupId,uid('g'));e.groupId=groups.get(e.groupId);}return e;});this.transaction('Duplicate objects',()=>this.slide.elements.push(...els));this.select(els.map(e=>e.id));}
+  duplicateSelected(){const els=copyElements(this.selected.filter(e=>!e.locked),{offset:24});this.transaction('Duplicate objects',()=>this.slide.elements.push(...els));this.select(els.map(e=>e.id));}
   addSlide(layout='blank'){const s=makeSlide(layout,this.doc.theme);this.transaction('New slide',()=>{const i=this.doc.slides.findIndex(s=>s.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);return s;}
-  duplicateSlide(){const s=clone(this.slide);s.id=uid('s');s.name+=' copy';const groups=new Map();for(const e of s.elements){e.id=uid();if(e.groupId){if(!groups.has(e.groupId))groups.set(e.groupId,uid('g'));e.groupId=groups.get(e.groupId);}}this.transaction('Duplicate slide',()=>{const i=this.doc.slides.findIndex(x=>x.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);}
+  duplicateSlide(){const s=clone(this.slide);s.id=uid('s');s.name+=' copy';s.elements=copyElements(s.elements);this.transaction('Duplicate slide',()=>{const i=this.doc.slides.findIndex(x=>x.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);}
   deleteSlide(){if(this.doc.slides.length===1)return false;this.transaction('Delete slide',()=>{const i=this.doc.slides.findIndex(s=>s.id===this.active);this.doc.slides.splice(i,1);this.active=this.doc.slides[Math.min(i,this.doc.slides.length-1)].id;});this.select([]);return true;}
   reorderSlide(from,to){this.transaction('Reorder slides',()=>{const [slide]=this.doc.slides.splice(from,1);this.doc.slides.splice(to,0,slide);});}
   align(mode){const els=this.selected.filter(e=>!e.locked);if(!els.length)return;const b=els.length===1?{x:0,y:0,w:this.doc.width,h:this.doc.height}:unionBounds(els);this.transaction('Align objects',()=>{for(const e of els){const r=elementBounds(e);if(mode==='left')e.x+=b.x-r.x;if(mode==='center')e.x+=b.x+b.w/2-r.x-r.w/2;if(mode==='right')e.x+=b.x+b.w-r.x-r.w;if(mode==='top')e.y+=b.y-r.y;if(mode==='middle')e.y+=b.y+b.h/2-r.y-r.h/2;if(mode==='bottom')e.y+=b.y+b.h-r.y-r.h;}});}

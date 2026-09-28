@@ -1,6 +1,6 @@
-import {uid,makeElement,makeSlide} from './core.js';
+import {uid,makeElement,makeSlide,GROUNDING_CONTRACT} from './core.js';
 export function createDemo(){
- const doc={format:'aurelia',version:1,id:uid('deck'),title:'The shape of what’s next',width:1280,height:720,theme:'studio',slides:[]};
+ const doc={format:'aurelia',version:1,grounding_contract:GROUNDING_CONTRACT,id:uid('deck'),title:'The shape of what’s next',width:1280,height:720,theme:'studio',slides:[]};
  const slide=(name,bg='@bg')=>{const s=makeSlide();s.name=name;s.bg=bg;doc.slides.push(s);return s;};
  const add=(s,type,p)=>{const e=makeElement(type,p);s.elements.push(e);return e;};
  const text=(s,text,x,y,w,h,size=28,p={})=>add(s,'text',{text,x,y,w,h,fontSize:size,padding:0,...p});
