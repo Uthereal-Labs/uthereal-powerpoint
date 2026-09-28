@@ -212,6 +212,7 @@ export class Store {
     const historicalDocs=[...(this.pending?[JSON.parse(this.pending.before).doc]:[]),...this.past.flatMap(entry=>[JSON.parse(entry.before).doc,JSON.parse(entry.after).doc]),...this.future.flatMap(entry=>[JSON.parse(entry.before).doc,JSON.parse(entry.after).doc]),this.doc];
     const submittedDoc=submitted_snapshot?(typeof submitted_snapshot==='string'?JSON.parse(submitted_snapshot):submitted_snapshot):null;
     const sourceElements=submittedDoc?(submittedDoc.doc||submittedDoc).slides.flatMap(slide=>slide.elements):[...historicalDocs.flatMap(doc=>doc.slides.flatMap(slide=>slide.elements)),...(this.clipboard?.elements||[])];
+    const submittedIds=submittedDoc?new Set(sourceElements.map(element=>element.id)):null;
     const sources=new Map(normalized.map(item=>{
       const element=sourceElements.find(element=>element.id===item.object_id&&element.grounding.some(annotation=>annotation.id===item.annotation_id&&sameOrigin(annotation.origin,item.submitted_origin)));
       const annotation=element?.grounding.find(annotation=>annotation.id===item.annotation_id&&sameOrigin(annotation.origin,item.submitted_origin));
@@ -223,7 +224,10 @@ export class Store {
         // Copies have fresh IDs but retain the exact source association origin.
         const matches=normalized.filter(item=>{const source=sources.get(item);return source&&sameOrigin(annotation.origin,item.submitted_origin)&&source.text===contentSignature(element)&&source.annotation===annotationSignature(annotation);});
         const exact=matches.find(item=>item.object_id===element.id&&item.annotation_id===annotation.id);
-        const match=exact||matches.find(item=>!item.invalidated)||matches[0];if(!match)return true;
+        // Only objects created while the save was in flight may inherit a
+        // source receipt. Submitted objects require their own exact selector.
+        const freshCopy=submittedIds&&!submittedIds.has(element.id);
+        const match=exact||(freshCopy&&(matches.find(item=>!item.invalidated)||matches[0]));if(!match)return true;
         changed=true;updated++;if(match.invalidated)return false;annotation.origin=clone(match.origin);return true;
       });
     }return changed;};

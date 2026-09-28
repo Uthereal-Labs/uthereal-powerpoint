@@ -81,6 +81,21 @@ test('Acknowledgements match submitted content and origin and invalidate without
   const stale=receipt(element);element.grounding[0].origin=structuredClone(agent);store.ackGrounding({invalidations:[{...stale,reason:'unsupported'}],submitted_snapshot:store.doc});assert.deepEqual(element.grounding[0].origin,agent);
   const accepted=receipt(element);store.ackGrounding({invalidations:[{...accepted,reason:'unsupported'}],submitted_snapshot:structuredClone(store.doc)});assert.deepEqual(element.grounding,[]);assert.equal(element.text,submitted.slides[0].elements[0].text);
 });
+test('Save ACK keeps submitted originals and copies on their own canonical associations',()=>{
+  const {store,element}=fixture();store.duplicateSelected();const copy=store.selected[0],submitted=structuredClone(store.doc);
+  const originalAck=receipt(element,{kind:'saved',revision_id:'revision-2',association_id:'original'}),copyAck=receipt(copy,{kind:'saved',revision_id:'revision-2',association_id:'copy'});
+  store.ackGrounding({receipts:[copyAck,originalAck],submitted_snapshot:submitted});
+  assert.deepEqual(element.grounding[0].origin,originalAck.origin);assert.deepEqual(copy.grounding[0].origin,copyAck.origin);
+  store.undo();assert.deepEqual(store.slide.elements[0].grounding[0].origin,originalAck.origin);
+  store.redo();assert.deepEqual(store.slide.elements.find(e=>e.id===copy.id).grounding[0].origin,copyAck.origin);
+});
+test('A submitted object cannot consume another object receipt or invalidation',()=>{
+  const {store,element}=fixture();store.duplicateSelected();const copy=store.selected[0],submitted=structuredClone(store.doc),copyAck=receipt(copy);
+  store.ackGrounding({receipts:[copyAck],submitted_snapshot:submitted});
+  assert.deepEqual(element.grounding[0].origin,saved);assert.deepEqual(copy.grounding[0].origin,copyAck.origin);
+  const originalAck=receipt(element);store.ackGrounding({invalidations:[{...originalAck,reason:'unsupported'}],submitted_snapshot:submitted});
+  assert.deepEqual(element.grounding,[]);assert.equal(copy.grounding.length,1);
+});
 test('Reload clears in-memory Undo/Redo and clipboard records',()=>{
   const {store}=fixture();store.copySelected();store.duplicateSelected();store.undo();const persisted=structuredClone(store.doc);store.replace(persisted);assert.equal(store.past.length,0);assert.equal(store.future.length,0);assert.equal(store.clipboard,null);assert.deepEqual(store.doc,persisted);
 });

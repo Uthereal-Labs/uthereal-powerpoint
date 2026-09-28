@@ -16,14 +16,14 @@ function displayedSlide(){return activeReferenceSlide?referenceDocument?.slides.
 function setReferencePresentation(presentation){
   const hadReferences=!!referenceDocument;
   referencePresentation=null;referenceDocument=null;activeReferenceSlide=null;
-  if(hadReferences){if(state.presenting)presentationIndex=Math.min(presentationIndex,store.doc.slides.length-1);syncUI('reference');if(state.presenting){updatePresenterUI();drawPresentation();}}
+  if(hadReferences){if(state.presenting)presentationIndex=Math.min(presentationIndex,store.doc.slides.length-1);store.emit('reference');if(state.presenting){updatePresenterUI();drawPresentation();}}
   if(presentation===null)return{slide_count:0};
   const ctx=document.createElement('canvas').getContext('2d');
   if(!ctx)throw new Error('Canvas text measurement is unavailable');
   const composed=composeReferencePresentation(store.doc,presentation,ctx);
   referencePresentation=presentation;referenceDocument=composed;
   if(state.presenting)presentationIndex=Math.min(presentationIndex,composed.slides.length-1);
-  syncUI('reference');
+  store.emit('reference');
   if(state.presenting){updatePresenterUI();drawPresentation();}
   return{slide_count:composed.slides.length-store.doc.slides.length};
 }
@@ -277,7 +277,7 @@ stage.addEventListener('dblclick',event=>{if(state.tool)return;const p=screenToS
 stage.addEventListener('contextmenu',event=>{event.preventDefault();finishTextEditing();const p=screenToSlide(event),hit=store.slide.elements.toReversed().find(e=>hitElement(e,p,3/state.scale));if(hit&&!store.selection.has(hit.id))selectElement(hit);let items=menuItem('Paste','paste','paste','Ctrl V');if(store.selected.length)items=menuItem('Copy','copy','copy','Ctrl C')+menuItem('Duplicate','duplicate','copy','Ctrl D')+items+menuItem('Delete','delete','trash','Del')+'<div class="menu-separator"></div>'+menuItem('Bring to front','front','front')+menuItem('Send to back','back','back')+menuItem('Group','group','group')+menuItem('Ungroup','ungroup','shapes')+menuItem('Lock / unlock','lock','lock');else items+=menuItem('New slide','new-slide','newslide')+menuItem('Background','background','fill');showMenu(items,{x:event.clientX,y:event.clientY});});
 viewport.addEventListener('wheel',event=>{if(event.ctrlKey||event.metaKey){event.preventDefault();zoomTo(state.scale*100*Math.exp(-event.deltaY*.003),{x:event.clientX,y:event.clientY});}},{passive:false});
 let draggingSlide=null;
-$('#thumbnails').addEventListener('click',event=>{const reference=event.target.closest('[data-reference-slide]');if(reference){finishTextEditing();clearTool();store.select([]);activeReferenceSlide=reference.dataset.referenceSlide;syncUI('reference');return;}const t=event.target.closest('[data-slide]');if(t){finishTextEditing();clearTool();activeReferenceSlide=null;store.activate(t.dataset.slide);renderInspector();}});
+$('#thumbnails').addEventListener('click',event=>{const reference=event.target.closest('[data-reference-slide]');if(reference){finishTextEditing();clearTool();store.select([]);activeReferenceSlide=reference.dataset.referenceSlide;store.emit('reference');return;}const t=event.target.closest('[data-slide]');if(t){finishTextEditing();clearTool();activeReferenceSlide=null;store.activate(t.dataset.slide);renderInspector();}});
 $('#thumbnails').addEventListener('contextmenu',event=>{const t=event.target.closest('[data-slide]');if(!t)return;event.preventDefault();store.activate(t.dataset.slide);showMenu(menuItem('New slide','new-slide','newslide')+menuItem('Duplicate slide','duplicate-slide','copy')+menuItem('Delete slide','delete-slide','trash')+menuItem('Rename slide','rename-slide','text'),{x:event.clientX,y:event.clientY});});
 $('#thumbnails').addEventListener('dragstart',event=>{const t=event.target.closest('[data-slide]');if(!t)return;draggingSlide=t.dataset.slide;event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',draggingSlide);t.classList.add('dragging');});
 $('#thumbnails').addEventListener('dragover',event=>{const t=event.target.closest('[data-slide]');if(!t||!draggingSlide)return;event.preventDefault();$$('.thumb.dragover').forEach(e=>e.classList.remove('dragover'));t.classList.add('dragover');});
@@ -514,7 +514,7 @@ function advancePresentation(direction=1){
  const next=presentationIndex+direction;if(next<0)return;if(next>=displayedDocument().slides.length){toast('End of presentation. Press Esc to return to editing.');return;}
  presentationIndex=next;presentationStep=direction<0?animationEntries(displayedDocument().slides[next]).length:0;presentationAnim=null;updatePresenterUI();drawPresentation();animateTransition($('#presentStage'),displayedDocument().slides[presentationIndex]);
 }
-function exitPresentation(){if(!state.presenting)return;state.presenting=false;$('#presentOverlay').hidden=true;cancelAnimationFrame(presentationRAF);clearInterval(presentationTimerId);if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});const slide=displayedDocument().slides[presentationIndex];if(store.doc.slides.some(item=>item.id===slide.id))store.activate(slide.id);else{activeReferenceSlide=slide.id;syncUI('reference');}viewport.focus({preventScroll:true});resizeStage();}
+function exitPresentation(){if(!state.presenting)return;state.presenting=false;$('#presentOverlay').hidden=true;cancelAnimationFrame(presentationRAF);clearInterval(presentationTimerId);if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});const slide=displayedDocument().slides[presentationIndex];if(store.doc.slides.some(item=>item.id===slide.id))store.activate(slide.id);else{activeReferenceSlide=slide.id;store.emit('reference');}viewport.focus({preventScroll:true});resizeStage();}
 $('#presentStage').addEventListener('click',()=>advancePresentation(1));
 $('#presentStage').addEventListener('pointermove',event=>{if(!laserEnabled)return;const r=$('#presentStage').getBoundingClientRect();$('#laser').style.left=event.clientX-r.left+'px';$('#laser').style.top=event.clientY-r.top+'px';$('#laser').hidden=false;});
 $('#presentOverlay').addEventListener('click',event=>{const button=event.target.closest('[data-present]');if(!button)return;switch(button.dataset.present){case'exit':exitPresentation();break;case'prev':advancePresentation(-1);break;case'next':advancePresentation(1);break;case'notes':$('#presenterNotes').hidden=!$('#presenterNotes').hidden;presentationResize();break;case'laser':laserEnabled=!laserEnabled;$('#laser').hidden=!laserEnabled;break;case'black':$('#blackout').hidden=!$('#blackout').hidden;break;}});
@@ -537,8 +537,8 @@ document.addEventListener('keydown',safeRun(async event=>{
  if(activeReferenceSlide){
   if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)){
    event.preventDefault();const slides=displayedDocument().slides,index=slides.findIndex(slide=>slide.id===activeReferenceSlide),next=slides[clamp(index+(['ArrowLeft','ArrowUp'].includes(event.key)?-1:1),0,slides.length-1)];
-   if(store.doc.slides.some(slide=>slide.id===next.id))store.activate(next.id);else{activeReferenceSlide=next.id;syncUI('reference');}
-  }else if(event.key==='Escape'){activeReferenceSlide=null;syncUI('reference');}
+   if(store.doc.slides.some(slide=>slide.id===next.id))store.activate(next.id);else{activeReferenceSlide=next.id;store.emit('reference');}
+  }else if(event.key==='Escape'){activeReferenceSlide=null;store.emit('reference');}
   else if(event.key==='Delete'||event.key==='Backspace'||event.ctrlKey||event.metaKey){event.preventDefault();}
   return;
  }
@@ -567,7 +567,7 @@ async function initialize(){
  const saved=await openStorage();if(saved){try{store.doc=validateDocument(saved);store.active=store.doc.slides[0].id;$('#saveText').textContent='Restored from this device';}catch(error){toast('The saved recovery copy could not be read. The example deck is open.',true);}}
  syncUI();renderInspector();resizeStage();await renderer.init();resizeStage();scheduleThumbnails(true);
  new ResizeObserver(()=>resizeStage()).observe(viewport);
- window.Aurelia={version:'1.0.0',groundingContract:GROUNDING_CONTRACT,capabilities:[GROUNDING_CAPABILITY],store,state,renderer,command,validateDocument,makeElement,exportPPTX,exportReferencePPTX,setReferencePresentation,get referenceRevision(){return referencePresentation?.id_revision??null;},importPPTX,createDemo,startTextEditing,finishTextEditing,resizeStage,renderCount:()=>renderCount,ready:true};
+ window.Aurelia={version:'1.0.0',groundingContract:GROUNDING_CONTRACT,capabilities:[GROUNDING_CAPABILITY],store,state,renderer,command,validateDocument,makeElement,exportPPTX,exportReferencePPTX,setReferencePresentation,get referenceRevision(){return referencePresentation?.id_revision??null;},get referenceActive(){return activeReferenceSlide!==null;},importPPTX,createDemo,startTextEditing,finishTextEditing,resizeStage,renderCount:()=>renderCount,ready:true};
  if(!saved)await persist();lastPersistedRevision=store.revision;
 }
 initialize().catch(error=>{console.error(error);toast('Initialization failed: '+error.message,true);$('#rendererStatus').textContent='Initialization error';});
