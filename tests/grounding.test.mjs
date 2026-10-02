@@ -41,16 +41,16 @@ test('Movement, geometry, ordering, grouping and formatting preserve grounding',
   store.updateSelected({x:300,rotation:30,fontSize:36,bold:true});store.arrange('front');store.select(store.slide.elements.map(e=>e.id));store.group();store.ungroup();store.addSlide();store.reorderSlide(0,1);
   assert.deepEqual(store.doc.slides[1].elements.find(e=>e.id===element.id).grounding,original);assert.deepEqual(validateDocument(store.doc),store.doc);
 });
-test('Manual text and table changes invalidate the complete element and native Undo restores it',()=>{
+test('Manual text and table changes preserve association intent and Undo restores passage precision',()=>{
   for(const type of ['text','table']){
     const {store,element}=fixture(type),original=structuredClone(element.grounding);
     store.transaction('Manual content',()=>{if(type==='text')element.text=element.text.replace('240','241');else element.cells[0][1]='241';});
-    assert.deepEqual(element.grounding,[]);store.undo();assert.deepEqual(store.slide.elements[0].grounding,original);store.redo();assert.deepEqual(store.slide.elements[0].grounding,[]);
+    assert.deepEqual(element.grounding[0].anchor,{scope:'object'});assert.deepEqual(element.grounding[0].origin,saved);store.undo();assert.deepEqual(store.slide.elements[0].grounding,original);store.redo();assert.deepEqual(store.slide.elements[0].grounding[0].anchor,{scope:'object'});
   }
 });
-test('Retyping original content does not restore annotations; genuine Undo does',()=>{
+test('Retyping retains association intent while Undo restores passage precision',()=>{
   const {store,element}=fixture(),original=element.text;store.begin('Typing');store.setElementContent(element,{text:'241'});store.setElementContent(element,{text:original});store.commit();
-  assert.deepEqual(element.grounding,[]);assert.equal(store.past.length,1);store.undo();assert.equal(store.slide.elements[0].grounding.length,1);
+  assert.deepEqual(element.grounding[0].anchor,{scope:'object'});assert.equal(store.past.length,1);store.undo();assert.equal(store.slide.elements[0].grounding.length,1);
 });
 test('Agent rewrites and annotation-only corrections join one history transaction',()=>{
   const {store,element}=fixture();store.transaction('Agent rewrite',()=>{element.text='240 clienti qualificati';store.assignGrounding([{object_id:element.id,annotations:[annotation(element.text,agent)]}]);});
@@ -71,7 +71,7 @@ test('Cross-artifact and forged clipboard payloads carry content only',()=>{
 test('Save receipts update live, pending, Undo/Redo and in-flight clipboard/copies without new history',()=>{
   const {store,element}=fixture(),ack=receipt(element),submitted=structuredClone(store.doc);store.copySelected();store.duplicateSelected();const duplicate=store.selected[0];store.undo();store.begin('Typing after save');store.setElementContent(store.slide.elements[0],{text:'Newer typing'});
   const past=store.past.length,future=store.future.length,revision=store.revision;
-  store.ackGrounding({receipts:[ack],submitted_snapshot:submitted});assert.equal(store.revision,revision);assert.equal(store.past.length,past);assert.equal(store.future.length,future);assert.equal(store.slide.elements[0].text,'Newer typing');assert.deepEqual(store.slide.elements[0].grounding,[]);
+  store.ackGrounding({receipts:[ack],submitted_snapshot:submitted});assert.equal(store.revision,revision);assert.equal(store.past.length,past);assert.equal(store.future.length,future);assert.equal(store.slide.elements[0].text,'Newer typing');assert.deepEqual(store.slide.elements[0].grounding[0].origin,saved);assert.deepEqual(store.slide.elements[0].grounding[0].anchor,{scope:'object'});
   assert.deepEqual(JSON.parse(store.pending.before).doc.slides[0].elements[0].grounding[0].origin,ack.origin);assert.deepEqual(store.clipboard.elements[0].grounding[0].origin,ack.origin);
   store.cancel();assert.deepEqual(store.slide.elements[0].grounding[0].origin,ack.origin);store.redo();assert.deepEqual(store.slide.elements.find(e=>e.id===duplicate.id).grounding[0].origin,ack.origin);
 });
@@ -110,14 +110,32 @@ test('PPTX export omits all private annotation/provenance data and retains ordin
   assert.deepEqual(stripGrounding(store.doc,{keepContract:true}).slides[0].elements[0].grounding,[]);
 });
 
-test('Object citations survive native copy, formatting, ACK and undo while content changes invalidate them',()=>{
+test('Object citations survive native copy, formatting, ACK and undo while content changes preserve them',()=>{
   const {store,element}=fixture();element.grounding[0].anchor={scope:'object'};
   store.updateSelected({bold:true});const payload=store.copySelected();store.pasteObjects(payload);
   const copied=store.selected[0];assert.deepEqual(copied.grounding[0].anchor,{scope:'object'});
   const submitted=structuredClone(store.doc),sourceAck=receipt(element),copyAck=receipt(copied,{kind:'saved',revision_id:'revision-2',association_id:'copy-association'});
   store.ackGrounding({receipts:[sourceAck,copyAck],submitted_snapshot:submitted});
   store.undo();assert.deepEqual(store.slide.elements[0].grounding[0].anchor,{scope:'object'});
-  store.redo();store.select([copied.id]);store.updateSelected({text:'Changed authored text'});assert.deepEqual(store.selected[0].grounding,[]);
+  store.redo();store.select([copied.id]);store.updateSelected({text:'Changed authored text'});assert.deepEqual(store.selected[0].grounding[0].anchor,{scope:'object'});
   store.undo();assert.deepEqual(store.slide.elements.find(item=>item.id===copied.id).grounding[0].anchor,{scope:'object'});
   assert.deepEqual(validateDocument(store.doc),store.doc);
+});
+
+test('Same-object passage continuity rebases unique UTF16 quotes and downgrades missing or ambiguous quotes',()=>{
+ const {store,element}=fixture();
+ const text='😀 EUR 240',quote='EUR 240';
+ element.text=text;element.grounding=[{...annotation(text),anchor:{scope:'passage',quote,start:3,end:10}}];
+ store.transaction('Insert prefix',()=>{element.text='Prefix '+element.text;});
+ assert.deepEqual(element.grounding[0].anchor,{scope:'passage',quote,start:10,end:17});
+ store.transaction('Currency correction',()=>{element.text=element.text.replace('EUR','USD');});
+ assert.deepEqual(element.grounding[0].anchor,{scope:'object'});assert.deepEqual(element.grounding[0].claim_ids,['claim-1','claim-2']);assert.deepEqual(element.grounding[0].origin,saved);
+ store.assignGrounding([{object_id:element.id,annotations:[{...annotation(element.text),anchor:{scope:'passage',quote:'240',start:14,end:17}}]}]);
+ store.transaction('Ambiguous quote',()=>{element.text='240 '+element.text;});
+ assert.deepEqual(element.grounding[0].anchor,{scope:'object'});
+});
+test('Canonical receipt updates anchor with origin only for the exact submitted state',()=>{
+ const {store,element}=fixture(),submitted=structuredClone(store.doc),ack={...receipt(element),anchor:{scope:'object'}};
+ const before=store.revision;store.ackGrounding({receipts:[ack],submitted_snapshot:submitted});
+ assert.equal(store.revision,before);assert.deepEqual(element.grounding[0].anchor,{scope:'object'});assert.deepEqual(element.grounding[0].origin,ack.origin);
 });
