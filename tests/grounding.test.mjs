@@ -6,7 +6,7 @@ import {exportPPTX,importPPTX,unzipSafe,zipStore} from '../src/pptx.js';
 const saved={kind:'saved',revision_id:'revision-1',association_id:'association-1'};
 const agent={kind:'agent',job_id:'job-1',steering_revision:0,sequence:2,declaration_id:'declaration-1'};
 function annotation(text,origin=saved,id='annotation-1') {
-  return {id,start:0,end:text.length,quote:text,claim_ids:['claim-1','claim-2'],relation:'derived',origin:structuredClone(origin)};
+  return {id,anchor:{scope:'passage',start:0,end:text.length,quote:text},claim_ids:['claim-1','claim-2'],relation:'derived',origin:structuredClone(origin)};
 }
 function fixture(type='text') {
   const doc=makeDocument(),element=type==='table'?makeElement('table',{cells:[['😀','240'],['Qualified','claim']],fontSize:22}):makeElement('text',{text:'😀 240 qualified\ncustomers'});
@@ -18,15 +18,15 @@ const receipt=(element,origin={kind:'saved',revision_id:'revision-2',association
 test('Native annotated text and tables round-trip with UTF-16 logical offsets',()=>{
   for(const type of ['text','table']){
     const {store,element}=fixture(type),validated=validateDocument(JSON.parse(JSON.stringify(store.doc)));
-    assert.deepEqual(validated,store.doc);assert.equal(validated.grounding_contract,2);
+    assert.deepEqual(validated,store.doc);assert.equal(validated.grounding_contract,3);
     const [unit]=store.inspectGrounding([element.id]);assert.equal(unit.object_id,element.id);assert.equal(unit.text,elementText(element));
-    assert.equal(unit.grounding[0].end,unit.text.length);assert.equal(unit.locations[0].slide_id,store.slide.id);
+    assert.equal(unit.grounding[0].anchor.end,unit.text.length);assert.equal(unit.locations[0].slide_id,store.slide.id);
     assert.equal(unit.text.indexOf('240'),type==='text'?3:3);
   }
 });
 test('Internal loading hard-cuts unsupported format and malformed annotations',()=>{
   const {store}=fixture();
-  for(const change of [doc=>delete doc.grounding_contract,doc=>doc.grounding_contract=1,doc=>delete doc.slides[0].elements[0].grounding,doc=>doc.slides[0].elements[0].grounding[0].start=1,doc=>doc.slides[0].elements[0].grounding[0].claim_ids=[],doc=>doc.slides[0].elements[0].grounding[0].origin.revision_id='',doc=>doc.slides[0].elements.push(structuredClone(doc.slides[0].elements[0]))]){
+  for(const change of [doc=>delete doc.grounding_contract,doc=>doc.grounding_contract=1,doc=>delete doc.slides[0].elements[0].grounding,doc=>doc.slides[0].elements[0].grounding[0].anchor.start=1,doc=>doc.slides[0].elements[0].grounding[0].claim_ids=[],doc=>doc.slides[0].elements[0].grounding[0].origin.revision_id='',doc=>doc.slides[0].elements.push(structuredClone(doc.slides[0].elements[0]))]){
     const invalid=structuredClone(store.doc);change(invalid);assert.throws(()=>validateDocument(invalid));
   }
   const duplicate=structuredClone(store.doc),copy=structuredClone(duplicate.slides[0].elements[0]);copy.id='fresh';duplicate.slides[0].elements.push(copy);assert.throws(()=>validateDocument(duplicate),/annotation IDs/);
@@ -108,4 +108,16 @@ test('PPTX export omits all private annotation/provenance data and retains ordin
   const before=store.snapshot(),blob=await exportPPTX(store.doc),files=await unzipSafe(await blob.arrayBuffer());
   const nativeJSON=new TextDecoder().decode(files.get('aurelia/document.json'));assert.equal(nativeJSON.includes('grounding'),false);assert.equal(nativeJSON.includes('claim-1'),false);assert.equal(nativeJSON.includes('association-1'),false);assert.ok(nativeJSON.includes('References: [1] Fictional source'));assert.equal(store.snapshot(),before);
   assert.deepEqual(stripGrounding(store.doc,{keepContract:true}).slides[0].elements[0].grounding,[]);
+});
+
+test('Object citations survive native copy, formatting, ACK and undo while content changes invalidate them',()=>{
+  const {store,element}=fixture();element.grounding[0].anchor={scope:'object'};
+  store.updateSelected({bold:true});const payload=store.copySelected();store.pasteObjects(payload);
+  const copied=store.selected[0];assert.deepEqual(copied.grounding[0].anchor,{scope:'object'});
+  const submitted=structuredClone(store.doc),sourceAck=receipt(element),copyAck=receipt(copied,{kind:'saved',revision_id:'revision-2',association_id:'copy-association'});
+  store.ackGrounding({receipts:[sourceAck,copyAck],submitted_snapshot:submitted});
+  store.undo();assert.deepEqual(store.slide.elements[0].grounding[0].anchor,{scope:'object'});
+  store.redo();store.select([copied.id]);store.updateSelected({text:'Changed authored text'});assert.deepEqual(store.selected[0].grounding,[]);
+  store.undo();assert.deepEqual(store.slide.elements.find(item=>item.id===copied.id).grounding[0].anchor,{scope:'object'});
+  assert.deepEqual(validateDocument(store.doc),store.doc);
 });

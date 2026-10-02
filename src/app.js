@@ -1,4 +1,4 @@
-import {Store,makeDocument,makeSlide,makeElement,validateDocument,stripGrounding,importExternalDocument,GROUNDING_CONTRACT,GROUNDING_CAPABILITY,uid,clone,clamp,color,THEMES,escapeHTML,localPoint,hitElement,elementBounds,unionBounds,rectIntersects,snapMove} from './core.js';
+import {Store,makeDocument,makeSlide,makeElement,validateDocument,resolveGrounding,stripGrounding,importExternalDocument,GROUNDING_CONTRACT,GROUNDING_CAPABILITY,uid,clone,clamp,color,THEMES,escapeHTML,localPoint,hitElement,elementBounds,unionBounds,rectIntersects,snapMove} from './core.js';
 import {SceneRenderer,ImagePool,paintSlide2D,flattenScene,expandElement,primitivePath,fontCSS,wrapText} from './renderer.js';
 import {createDemo} from './demo.js';
 import {exportPPTX,importPPTX,zipStore} from './pptx.js';
@@ -567,7 +567,7 @@ async function initialize(){
  const saved=await openStorage();if(saved){try{store.doc=validateDocument(saved);store.active=store.doc.slides[0].id;$('#saveText').textContent='Restored from this device';}catch(error){toast('The saved recovery copy could not be read. The example deck is open.',true);}}
  syncUI();renderInspector();resizeStage();await renderer.init();resizeStage();scheduleThumbnails(true);
  new ResizeObserver(()=>resizeStage()).observe(viewport);
- window.Aurelia={version:'1.0.0',groundingContract:GROUNDING_CONTRACT,capabilities:[GROUNDING_CAPABILITY],store,state,renderer,command,validateDocument,makeElement,exportPPTX,exportReferencePPTX,setReferencePresentation,get referenceRevision(){return referencePresentation?.id_revision??null;},get referenceActive(){return activeReferenceSlide!==null;},importPPTX,createDemo,startTextEditing,finishTextEditing,resizeStage,renderCount:()=>renderCount,ready:true};
+ window.Aurelia={version:'1.0.0',groundingContract:GROUNDING_CONTRACT,capabilities:[GROUNDING_CAPABILITY],store,state,renderer,command,validateDocument,resolveGrounding,makeElement,exportPPTX,exportReferencePPTX,setReferencePresentation,get referenceRevision(){return referencePresentation?.id_revision??null;},get referenceActive(){return activeReferenceSlide!==null;},importPPTX,createDemo,startTextEditing,finishTextEditing,resizeStage,renderCount:()=>renderCount,ready:true};
  if(!saved)await persist();lastPersistedRevision=store.revision;
 }
 initialize().catch(error=>{console.error(error);toast('Initialization failed: '+error.message,true);$('#rendererStatus').textContent='Initialization error';});

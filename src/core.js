@@ -1,7 +1,7 @@
 /** Aurelia document/geometry/command kernel. No browser or renderer dependencies. */
 export const VERSION = 1;
-export const GROUNDING_CONTRACT = 2;
-export const GROUNDING_CAPABILITY = 'grounding_lifecycle_v2';
+export const GROUNDING_CONTRACT = 3;
+export const GROUNDING_CAPABILITY = 'grounding_lifecycle_v3';
 export const THEMES = {
   studio: { name:'Terracotta', bg:'#F5F2EC', ink:'#17313A', dark:'#17313A', light:'#F5F2EC', accent:'#DA735B', secondary:'#A5B8AF', muted:'#71827F', line:'#DDDCD4' },
   midnight: { name:'Midnight', bg:'#EDF0F7', ink:'#202941', dark:'#202941', light:'#EDF0F7', accent:'#8992DF', secondary:'#B4C9E2', muted:'#7B829A', line:'#D3D7E4' },
@@ -49,22 +49,53 @@ export function validateGroundingOrigin(origin) {
     return {kind:'agent',job_id:origin.job_id,steering_revision:origin.steering_revision,sequence:origin.sequence,declaration_id:origin.declaration_id};
   throw new Error('Invalid grounding origin.');
 }
+export function resolveGrounding(element, declarations) {
+    const text = elementText(element);
+    if (!Array.isArray(declarations)) throw new Error('Invalid native grounding declarations.');
+    const diagnostics = [];
+    const annotations = declarations.map(declaration => {
+        if (!declaration || typeof declaration !== 'object' || Array.isArray(declaration) ||
+            Object.keys(declaration).some(key => !['id', 'claim_ids', 'relation', 'origin', 'passage'].includes(key)))
+            throw new Error('Invalid native grounding declaration fields.');
+        let anchor = { scope: 'object' };
+        if (declaration.passage !== undefined) {
+            if (typeof declaration.passage !== 'string' || !declaration.passage.length || declaration.passage.length > 32000)
+                throw new Error('Invalid optional grounding passage.');
+            const start = text.indexOf(declaration.passage);
+            const reason = start < 0 ? 'passage_not_found' : text.indexOf(declaration.passage, start + 1) >= 0 ? 'passage_ambiguous' : null;
+            if (reason) {
+                if (diagnostics.length < 20) diagnostics.push({ annotation_id: declaration.id, reason, scope: 'object' });
+            } else anchor = { scope: 'passage', quote: declaration.passage, start, end: start + declaration.passage.length };
+        }
+        return { id: declaration.id, anchor, claim_ids: declaration.claim_ids, relation: declaration.relation, origin: declaration.origin };
+    });
+    return { annotations: validateGrounding(element, annotations), diagnostics };
+}
+
+export function validateCitationAnchor(anchor, text) {
+    if (!anchor || typeof anchor !== 'object' || Array.isArray(anchor)) throw new Error('Invalid native citation anchor.');
+    const keys = Object.keys(anchor);
+    if (anchor.scope === 'object' && keys.length === 1) return { scope: 'object' };
+    if (anchor.scope !== 'passage' || keys.length !== 4 || !keys.every(key => ['scope', 'quote', 'start', 'end'].includes(key)) ||
+        !Number.isSafeInteger(anchor.start) || !Number.isSafeInteger(anchor.end) || anchor.start < 0 ||
+        anchor.end <= anchor.start || anchor.end > text.length || typeof anchor.quote !== 'string' ||
+        !anchor.quote.length || anchor.quote.length > 32000 || text.slice(anchor.start, anchor.end) !== anchor.quote)
+        throw new Error('Citation passage does not match its exact UTF-16 span.');
+    return { scope: 'passage', quote: anchor.quote, start: anchor.start, end: anchor.end };
+}
 export function validateGrounding(element, annotations, seen=new Set()) {
   if(!Array.isArray(annotations)||annotations.length>2000)throw new Error('Invalid grounding annotations.');
   if(annotations.length&&!['text','table'].includes(element.type))throw new Error('Only text and table objects can contain grounding.');
   const text=elementText(element);
   return annotations.map(annotation=>{
     if(!annotation||!validIdentity(annotation.id)||seen.has(annotation.id))throw new Error('Grounding annotation IDs must be unique.');
-    if(!Number.isInteger(annotation.start)||!Number.isInteger(annotation.end)||annotation.start<0||annotation.end<=annotation.start||annotation.end>text.length||typeof annotation.quote!=='string'||!annotation.quote.length||annotation.quote.length>32000||text.slice(annotation.start,annotation.end)!==annotation.quote){
-      const start=typeof annotation.quote==='string'&&annotation.quote.length?text.indexOf(annotation.quote):-1;
-      const hint=start<0?'The quote is absent from the target object; inspect its current text.':text.indexOf(annotation.quote,start+1)>=0?'The quote occurs more than once; inspect the target and select the intended occurrence.':`The exact quote occurs at UTF-16 [${start}, ${start+annotation.quote.length}); resubmit the intended annotation with those offsets.`;
-      throw new Error(`Grounding annotation ${annotation.id} does not match its quoted UTF-16 span. ${hint}`);
-    }
+    if(Object.keys(annotation).some(key=>!['id','anchor','claim_ids','relation','origin'].includes(key)))throw new Error('Invalid native annotation fields.');
+    const anchor=validateCitationAnchor(annotation.anchor,text);
     if(!Array.isArray(annotation.claim_ids)||!annotation.claim_ids.length||annotation.claim_ids.length>12||annotation.claim_ids.some(id=>!validIdentity(id))||new Set(annotation.claim_ids).size!==annotation.claim_ids.length)
       throw new Error('Invalid grounding claims.');
     if(!['supports','derived'].includes(annotation.relation))throw new Error('Invalid grounding relation.');
     const origin=validateGroundingOrigin(annotation.origin);seen.add(annotation.id);if(seen.size>2000)throw new Error('Presentation exceeds the 2,000-annotation limit.');
-    return {id:annotation.id,start:annotation.start,end:annotation.end,quote:annotation.quote,claim_ids:[...annotation.claim_ids],relation:annotation.relation,origin};
+    return {id:annotation.id,anchor,claim_ids:[...annotation.claim_ids],relation:annotation.relation,origin};
   });
 }
 // Exported Office packages and clipboard payloads never expose evidence metadata.
@@ -91,7 +122,7 @@ export function importExternalDocument(raw) {
 const VALID_TYPES=new Set(['rect','roundRect','ellipse','triangle','diamond','arrow','star','line','text','image','chart','table']);
 const VALID_COLORS=/^(?:@[a-z]+|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|none)$/;
 export function validateDocument(raw) {
-  if(!raw||raw.format!=='aurelia'||raw.version!==VERSION||raw.grounding_contract!==GROUNDING_CONTRACT)throw new Error('Incompatible presentation format: grounding contract 2 is required.');
+  if(!raw||raw.format!=='aurelia'||raw.version!==VERSION||raw.grounding_contract!==GROUNDING_CONTRACT)throw new Error('Incompatible presentation format: grounding contract 3 is required.');
   if(!Array.isArray(raw.slides)||raw.slides.length<1||raw.slides.length>500)throw new Error('A presentation must contain 1–500 slides.');
   const d=makeDocument(); d.id=String(raw.id||d.id);d.title=String(raw.title||'Untitled presentation').slice(0,200);d.width=clamp(Number(raw.width)||1280,320,4096);d.height=clamp(Number(raw.height)||720,240,4096);d.theme=THEMES[raw.theme]?raw.theme:'studio';
   if(!validIdentity(raw.id))throw new Error('Invalid presentation identity.');
@@ -211,7 +242,7 @@ export class Store {
       return {...item,submitted_origin:validateGroundingOrigin(item.submitted_origin)};
     });
     const sameOrigin=(a,b)=>JSON.stringify(validateGroundingOrigin(a))===JSON.stringify(b);
-    const annotationSignature=annotation=>JSON.stringify({start:annotation.start,end:annotation.end,quote:annotation.quote,claim_ids:annotation.claim_ids,relation:annotation.relation});
+    const annotationSignature=annotation=>JSON.stringify({anchor:annotation.anchor,claim_ids:annotation.claim_ids,relation:annotation.relation});
     const historicalDocs=[...(this.pending?[JSON.parse(this.pending.before).doc]:[]),...this.past.flatMap(entry=>[JSON.parse(entry.before).doc,JSON.parse(entry.after).doc]),...this.future.flatMap(entry=>[JSON.parse(entry.before).doc,JSON.parse(entry.after).doc]),this.doc];
     const submittedDoc=submitted_snapshot?(typeof submitted_snapshot==='string'?JSON.parse(submitted_snapshot):submitted_snapshot):null;
     const sourceElements=submittedDoc?(submittedDoc.doc||submittedDoc).slides.flatMap(slide=>slide.elements):[...historicalDocs.flatMap(doc=>doc.slides.flatMap(slide=>slide.elements)),...(this.clipboard?.elements||[])];
