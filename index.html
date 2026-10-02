@@ -156,6 +156,21 @@ function validateCitationAnchor(anchor, text) {
         throw new Error('Citation passage does not match its exact UTF-16 span.');
     return { scope: 'passage', quote: anchor.quote, start: anchor.start, end: anchor.end };
 }
+/** Carry associations only on the same surviving authored element. */
+function continueGrounding(element) {
+  const text=elementText(element);
+  const annotations=(element.grounding||[]).map(annotation=>{
+    const anchor=annotation.anchor;
+    if(anchor?.scope!=='passage')return annotation;
+    if(Object.keys(anchor).length!==4||!Object.keys(anchor).every(key=>['scope','quote','start','end'].includes(key))||
+      typeof anchor.quote!=='string'||!anchor.quote.length||anchor.quote.length>32000||!Number.isSafeInteger(anchor.start)||!Number.isSafeInteger(anchor.end)||anchor.start<0||anchor.end<=anchor.start||anchor.end-anchor.start!==anchor.quote.length)
+      throw new Error('Invalid original citation passage.');
+    if(text.slice(anchor.start,anchor.end)===anchor.quote)return annotation;
+    const start=text.indexOf(anchor.quote);
+    return {...annotation,anchor:start>=0&&text.indexOf(anchor.quote,start+1)<0?{scope:'passage',quote:anchor.quote,start,end:start+anchor.quote.length}:{scope:'object'}};
+  });
+  return validateGrounding(element,annotations);
+}
 function validateGrounding(element, annotations, seen=new Set()) {
   if(!Array.isArray(annotations)||annotations.length>2000)throw new Error('Invalid grounding annotations.');
   if(annotations.length&&!['text','table'].includes(element.type))throw new Error('Only text and table objects can contain grounding.');
@@ -261,7 +276,7 @@ class Store {
     const previous=new Map(JSON.parse(before).doc.slides.flatMap(slide=>slide.elements).map(element=>[element.id,element]));
     for(const element of this.doc.slides.flatMap(slide=>slide.elements)){
       const original=previous.get(element.id);
-      if(original&&contentSignature(original)!==contentSignature(element)&&!groundingAssignments.has(element.id))element.grounding=[];
+      if(original&&contentSignature(original)!==contentSignature(element)&&!groundingAssignments.has(element.id))element.grounding=continueGrounding(element);
     }
     this.pending=null;const after=this.snapshot();if(before===after)return false;this.past.push({label,before,after});this.future=[];let size=this.past.reduce((n,x)=>n+x.before.length+x.after.length,0);while(this.past.length>1&&(this.past.length>this.maxHistory||size>this.maxHistoryBytes)){const x=this.past.shift();size-=x.before.length+x.after.length;}this.revision++;this.emit('commit');return true;}
   cancel(){if(!this.pending)return;const snap=this.pending.before;this.pending=null;this.restore(snap);}
@@ -270,7 +285,8 @@ class Store {
   undo(){if(this.pending)this.commit();const cmd=this.past.pop();if(!cmd)return;this.future.push(cmd);this.restore(cmd.before);}
   redo(){const cmd=this.future.pop();if(!cmd)return;this.past.push(cmd);this.restore(cmd.after);}
   replace(doc){this.doc=validateDocument(doc);this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('restore');}
-  setElementContent(element,props){const before=contentSignature(element);Object.assign(element,props);if(contentSignature(element)!==before)element.grounding=[];}
+  setElementContent(element,props){const before=contentSignature(element);Object.assign(element,props);if(contentSignature(element)!==before)element.grounding=continueGrounding(element);}
+  normalizeGrounding(document){for(const element of document.slides.flatMap(slide=>slide.elements))element.grounding=continueGrounding(element);return document;}
   inspectGrounding(objectIds=null){
     if(objectIds!==null&&(!Array.isArray(objectIds)||objectIds.some(id=>!validIdentity(id))))throw new Error('Invalid grounding target IDs.');
     const targets=objectIds===null?null:new Set(objectIds),units=[];
@@ -323,6 +339,7 @@ class Store {
     const sources=new Map(normalized.map(item=>{
       const element=sourceElements.find(element=>element.id===item.object_id&&element.grounding.some(annotation=>annotation.id===item.annotation_id&&sameOrigin(annotation.origin,item.submitted_origin)));
       const annotation=element?.grounding.find(annotation=>annotation.id===item.annotation_id&&sameOrigin(annotation.origin,item.submitted_origin));
+      if(item.anchor)validateCitationAnchor(item.anchor,element?elementText(element):'');
       return [item,annotation?{text:contentSignature(element),annotation:annotationSignature(annotation)}:null];
     }));
     let updated=0;
@@ -335,7 +352,7 @@ class Store {
         // source receipt. Submitted objects require their own exact selector.
         const freshCopy=submittedIds&&!submittedIds.has(element.id);
         const match=exact||(freshCopy&&(matches.find(item=>!item.invalidated)||matches[0]));if(!match)return true;
-        changed=true;updated++;if(match.invalidated)return false;annotation.origin=clone(match.origin);return true;
+        changed=true;updated++;if(match.invalidated)return false;if(match.anchor)annotation.anchor=validateCitationAnchor(match.anchor,elementText(element));annotation.origin=clone(match.origin);return true;
       });
     }return changed;};
     const updateSnapshot=snapshot=>{const value=JSON.parse(snapshot);return updateElements(value.doc.slides.flatMap(slide=>slide.elements))?JSON.stringify(value):snapshot;};

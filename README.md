@@ -69,3 +69,5 @@ WebGPU hardware execution, secure-origin autosave, slideshow playback, and full 
 This is a working first implementation, not complete Microsoft PowerPoint parity. Missing areas include mixed-style text runs, comprehensive slide-master inheritance, SmartArt, embedded media, collaboration, and native Office chart objects. PPTX charts and tables export as drawing objects; donut charts export as raster images. Generic PPTX import is best-effort. Save a native `.aurelia` project to preserve the editor's own document model.
 
 The project is independently developed and is not affiliated with Microsoft.
+
+Native source associations survive edits to the same text or table element. Exact passage anchors rebase only for a unique exact quote; missing or ambiguous passages downgrade to object scope. Explicit removal/replacement stays authoritative. Save acknowledgements reconcile canonical anchors and origins only against matching submitted content, preserving later typing and Undo/Redo. The hosting service authorizes evidence and validates continuity; retention does not certify semantic support.
