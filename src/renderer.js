@@ -78,17 +78,25 @@ function childElement(parent,local,id){
 }
 export function expandElement(e){
   const out=[];const add=(v)=>out.push(childElement(e,v,out.length));
-  const txt=(text,x,y,w,h,extra={})=>add({type:'text',text:String(text),x,y,w,h,fontFamily:'Arial',fontSize:17,fill:'@muted',padding:0,align:'left',lineHeight:1.2,...extra});
+  const txt=(text,x,y,w,h,extra={})=>add({type:'text',text:String(text),x,y,w,h,fontFamily:e.fontFamily||'Arial',fontSize:17,fill:'@muted',padding:0,align:'left',lineHeight:1.2,...extra});
   if(e.type==='table'){
-    const rows=e.cells||[['A','B'],['C','D']],cols=Math.max(1,...rows.map(r=>r.length)),cw=e.w/cols,rh=e.h/rows.length;
-    rows.forEach((row,r)=>{for(let c=0;c<cols;c++){add({type:'rect',x:c*cw,y:r*rh,w:cw,h:rh,fill:r===0?(e.fill||'@dark'):(r%2?'@bg':'@line'),stroke:'@light',strokeWidth:1});txt(row[c]??'',c*cw+14,r*rh+8,cw-28,rh-16,{fontSize:e.fontSize||22,fill:r===0?'@light':'@ink',bold:r===0,valign:'middle'});}});return out;
+    const rows=e.cells||[['A','B'],['C','D']],cols=Math.max(1,...rows.map(r=>r.length)),rh=e.h/rows.length,font=e.fontFamily||'Arial';
+    const weights=Array.isArray(e.columnWidths)&&e.columnWidths.length===cols?e.columnWidths:Array(cols).fill(1),total=weights.reduce((a,b)=>a+b,0)||cols;
+    const widths=weights.map(w=>e.w*w/total),lefts=widths.map((_,c)=>widths.slice(0,c).reduce((a,b)=>a+b,0)),highlighted=new Set(e.highlightRows||[]);
+    rows.forEach((row,r)=>{
+      const body=r===0?(e.fill||'@dark'):highlighted.has(r)?'@highlight':e.banded===false?'@bg':(r%2?'@bg':'@line');
+      for(let c=0;c<cols;c++){
+        add({type:'rect',x:lefts[c],y:r*rh,w:widths[c],h:rh,fill:body,stroke:'@light',strokeWidth:1});
+        txt(row[c]??'',lefts[c]+14,r*rh+8,Math.max(1,widths[c]-28),Math.max(1,rh-16),{fontFamily:font,fontSize:e.fontSize||22,fill:r===0?(e.headerColor||'@light'):'@ink',bold:r===0||highlighted.has(r),valign:'middle',align:e.columnAlign?.[c]||'left'});
+      }
+    });return out;
   }
   if(e.type!=='chart'||e.chartType==='donut')return[e];
   const labels=e.labels||['A','B','C'],values=e.values||[30,50,70],mx=Math.max(1,...values),max=Math.ceil(mx/5)*5,left=54,top=24,right=20,bottom=48,W=Math.max(1,e.w-left-right),H=Math.max(1,e.h-top-bottom),bw=W/Math.max(1,labels.length);
   for(let i=0;i<=4;i++){const y=top+H-H*i/4;add({type:'line',x:left,y,w:W,h:1,fill:'@line'});txt(Math.round(max*i/4),0,y-10,43,22,{fontSize:14,align:'right'});}
   values.forEach((v,i)=>{
     const x=left+i*bw,y=top+H-H*v/max;
-    if(e.chartType==='bar')add({type:'roundRect',x:x+bw*.18,y,w:bw*.64,h:Math.max(1,top+H-y),fill:i===values.length-1?(e.fill||'@accent'):'@secondary',radius:5});
+    if(e.chartType==='bar')add({type:'roundRect',x:x+bw*.18,y,w:bw*.64,h:Math.max(1,top+H-y),fill:i===(Number.isInteger(e.highlight)?e.highlight:values.length-1)?(e.fill||'@accent'):'@secondary',radius:5});
     else{const cx=x+bw/2;if(i>0){const px=cx-bw,py=top+H-H*values[i-1]/max,dx=cx-px,dy=y-py,len=Math.hypot(dx,dy);add({type:'line',x:(px+cx)/2-len/2,y:(py+y)/2-2,w:len,h:4,rotation:Math.atan2(dy,dx)*180/Math.PI,fill:e.fill||'@accent'});}add({type:'ellipse',x:cx-5,y:y-5,w:10,h:10,fill:e.fill||'@accent'});}
     if(e.showValues!==false)txt(v,x,y-26,bw,23,{fontSize:16,align:'center',fill:'@ink',bold:true});
     txt(labels[i]||'',x,top+H+15,bw,30,{fontSize:15,align:'center'});
@@ -103,7 +111,7 @@ export class ImagePool{
 }
 export function drawDonut(ctx,e,theme){
   const values=e.values||[],total=values.reduce((a,b)=>a+b,0)||1,cx=e.w*.35,cy=e.h/2,r=Math.min(e.w*.28,e.h*.4),colors=[e.fill||'@accent','@secondary','@dark','@muted','@line'];let a=-Math.PI/2;
-  values.forEach((v,i)=>{const end=a+v/total*Math.PI*2;ctx.beginPath();ctx.arc(cx,cy,r,a,end);ctx.arc(cx,cy,r*.63,end,a,true);ctx.closePath();ctx.fillStyle=color(colors[i%colors.length],theme);ctx.fill();a=end;ctx.fillRect(e.w*.72,35+i*37,12,12);ctx.font='16px Arial';ctx.fillStyle=color('@ink',theme);ctx.fillText(`${e.labels?.[i]||''}  ${v}`,e.w*.72+22,46+i*37);});ctx.textAlign='center';ctx.font='bold 42px Arial';ctx.fillStyle=color('@ink',theme);ctx.fillText(values.reduce((a,b)=>a+b,0),cx,cy+10);ctx.font='14px Arial';ctx.fillStyle=color('@muted',theme);ctx.fillText('TOTAL',cx,cy+36);
+  values.forEach((v,i)=>{const end=a+v/total*Math.PI*2;ctx.beginPath();ctx.arc(cx,cy,r,a,end);ctx.arc(cx,cy,r*.63,end,a,true);ctx.closePath();ctx.fillStyle=color(colors[i%colors.length],theme);ctx.fill();a=end;ctx.fillRect(e.w*.72,35+i*37,12,12);ctx.font=`16px "${e.fontFamily||'Arial'}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(`${e.labels?.[i]||''}  ${v}`,e.w*.72+22,46+i*37);});ctx.textAlign='center';ctx.font=`bold 42px "${e.fontFamily||'Arial'}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(values.reduce((a,b)=>a+b,0),cx,cy+10);ctx.font=`14px "${e.fontFamily||'Arial'}", sans-serif`;ctx.fillStyle=color('@muted',theme);ctx.fillText('TOTAL',cx,cy+36);
 }
 export function drawLeaf2D(ctx,e,theme,images){
   if(e.hidden)return;ctx.save();ctx.globalAlpha=e.opacity??1;ctx.translate(e.x+e.w/2,e.y+e.h/2);ctx.rotate((e.rotation||0)*Math.PI/180);ctx.translate(-e.w/2,-e.h/2);

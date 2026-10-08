@@ -2,17 +2,23 @@
 export const VERSION = 1;
 export const GROUNDING_CONTRACT = 3;
 export const GROUNDING_CAPABILITY = 'grounding_lifecycle_v3';
+/** Deck themes. Color keys resolve as @tokens; mode and fonts describe the theme to authors. */
 export const THEMES = {
-  studio: { name:'Terracotta', bg:'#F5F2EC', ink:'#17313A', dark:'#17313A', light:'#F5F2EC', accent:'#DA735B', secondary:'#A5B8AF', muted:'#71827F', line:'#DDDCD4' },
-  midnight: { name:'Midnight', bg:'#EDF0F7', ink:'#202941', dark:'#202941', light:'#EDF0F7', accent:'#8992DF', secondary:'#B4C9E2', muted:'#7B829A', line:'#D3D7E4' },
-  forest: { name:'Botanical', bg:'#F2F3EA', ink:'#203B32', dark:'#203B32', light:'#F2F3EA', accent:'#99AA69', secondary:'#C7D4B8', muted:'#6C8271', line:'#D5DCCD' },
-  cobalt: { name:'Blueprint', bg:'#F3F6FF', ink:'#172B51', dark:'#172B51', light:'#F3F6FF', accent:'#446CE9', secondary:'#ADC8EF', muted:'#7183A5', line:'#D7DFF0' },
-  rose: { name:'Atelier', bg:'#FBF3F1', ink:'#4C313C', dark:'#4C313C', light:'#FBF3F1', accent:'#CC788D', secondary:'#D9BEA6', muted:'#997B85', line:'#ECD7DD' }
+  studio: { name:'Terracotta', mode:'light', headingFont:'Georgia', bodyFont:'Arial', bg:'#F5F2EC', ink:'#17313A', dark:'#17313A', light:'#F5F2EC', accent:'#DA735B', secondary:'#A5B8AF', muted:'#71827F', line:'#DDDCD4', surface:'#ECE7DD', highlight:'#F3D9CF' },
+  midnight: { name:'Midnight', mode:'light', headingFont:'Arial', bodyFont:'Arial', bg:'#EDF0F7', ink:'#202941', dark:'#202941', light:'#EDF0F7', accent:'#8992DF', secondary:'#B4C9E2', muted:'#7B829A', line:'#D3D7E4', surface:'#E2E6F1', highlight:'#DCDDF6' },
+  forest: { name:'Botanical', mode:'light', headingFont:'Georgia', bodyFont:'Arial', bg:'#F2F3EA', ink:'#203B32', dark:'#203B32', light:'#F2F3EA', accent:'#99AA69', secondary:'#C7D4B8', muted:'#6C8271', line:'#D5DCCD', surface:'#E7E9DA', highlight:'#E3EACB' },
+  cobalt: { name:'Blueprint', mode:'light', headingFont:'Arial', bodyFont:'Arial', bg:'#F3F6FF', ink:'#172B51', dark:'#172B51', light:'#F3F6FF', accent:'#446CE9', secondary:'#ADC8EF', muted:'#7183A5', line:'#D7DFF0', surface:'#E6ECFB', highlight:'#D6E0FB' },
+  rose: { name:'Atelier', mode:'light', headingFont:'Georgia', bodyFont:'Arial', bg:'#FBF3F1', ink:'#4C313C', dark:'#4C313C', light:'#FBF3F1', accent:'#CC788D', secondary:'#D9BEA6', muted:'#997B85', line:'#ECD7DD', surface:'#F5E6E2', highlight:'#F2D6DD' },
+  editorial: { name:'Editorial', mode:'light', headingFont:'Georgia', bodyFont:'Arial', bg:'#F5F1E8', ink:'#1D2B3A', dark:'#1D2B3A', light:'#F5F1E8', accent:'#C4622D', secondary:'#A9B4BE', muted:'#6B7480', line:'#E4DDCF', surface:'#EAE3D4', highlight:'#F6DCC8' },
+  mono: { name:'Mono', mode:'light', headingFont:'Arial', bodyFont:'Arial', bg:'#FFFFFF', ink:'#111827', dark:'#111827', light:'#FFFFFF', accent:'#2563EB', secondary:'#93B4F5', muted:'#6B7280', line:'#E5E7EB', surface:'#F3F4F6', highlight:'#DBE7FD' },
+  slate: { name:'Slate', mode:'dark', headingFont:'Georgia', bodyFont:'Arial', bg:'#0F1A2B', ink:'#EEF2F7', dark:'#0A1220', light:'#F5F7FA', accent:'#F2B33D', secondary:'#5B7DB1', muted:'#9AA8BC', line:'#22324A', surface:'#17253B', highlight:'#3A3420' },
+  graphite: { name:'Graphite', mode:'dark', headingFont:'Arial', bodyFont:'Arial', bg:'#1A1C20', ink:'#F0F0EC', dark:'#0F1013', light:'#F4F4F0', accent:'#3FB8A8', secondary:'#5F6B78', muted:'#A1A6AD', line:'#2A2D33', surface:'#24272D', highlight:'#1F3A37' }
 };
+export const THEME_COLOR_TOKENS = ['bg','ink','dark','light','accent','secondary','muted','line','surface','highlight'];
 export const clone = value => structuredClone(value);
 export const uid = (prefix='e') => `${prefix}_${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)+Date.now().toString(36)}`;
 export const clamp = (n,a,b) => Math.max(a,Math.min(b,n));
-export const color = (value,theme='studio') => value?.startsWith('@') ? (THEMES[theme]?.[value.slice(1)] || '#17313A') : (value || '#000000');
+export const color = (value,theme='studio') => value?.startsWith('@') ? ((THEME_COLOR_TOKENS.includes(value.slice(1))&&THEMES[theme]?.[value.slice(1)]) || '#17313A') : (value || '#000000');
 export const escapeHTML = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function makeElement(type='rect', props={}) {
   return { id:uid(), type, name:({text:'Text box',rect:'Rectangle',roundRect:'Rounded rectangle',ellipse:'Ellipse',line:'Line',triangle:'Triangle',diamond:'Diamond',arrow:'Arrow',star:'Star',image:'Picture',chart:'Chart',table:'Table'})[type]||type,
@@ -136,6 +142,20 @@ export function importExternalDocument(raw) {
 }
 const VALID_TYPES=new Set(['rect','roundRect','ellipse','triangle','diamond','arrow','star','line','text','image','chart','table']);
 const VALID_COLORS=/^(?:@[a-z]+|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|none)$/;
+const fontName=v=>String(v).replace(/[^a-zA-Z0-9 ,\-]/g,'').slice(0,100);
+/** Optional chart/table styling; absent properties stay absent so older documents round-trip unchanged. */
+function validateDataStyle(e,v){
+  if(typeof v.fontFamily==='string'&&fontName(v.fontFamily))e.fontFamily=fontName(v.fontFamily);
+  if(e.type==='chart'&&Number.isInteger(v.highlight))e.highlight=clamp(v.highlight,-1,29);
+}
+function validateTableStyle(e,v){
+  const cols=Math.max(1,...e.cells.map(r=>r.length));
+  if(Array.isArray(v.columnWidths)&&v.columnWidths.length===cols&&v.columnWidths.every(w=>Number.isFinite(+w)&&+w>0))e.columnWidths=v.columnWidths.map(w=>clamp(+w,0.01,1000));
+  if(Array.isArray(v.columnAlign)&&v.columnAlign.length===cols)e.columnAlign=v.columnAlign.map(a=>['left','center','right'].includes(a)?a:'left');
+  if(Array.isArray(v.highlightRows))e.highlightRows=[...new Set(v.highlightRows.filter(r=>Number.isInteger(r)&&r>0&&r<e.cells.length))].sort((a,b)=>a-b);
+  if(typeof v.banded==='boolean')e.banded=v.banded;
+  if(typeof v.headerColor==='string'&&VALID_COLORS.test(v.headerColor))e.headerColor=v.headerColor;
+}
 export function validateDocument(raw) {
   if(!raw||raw.format!=='aurelia'||raw.version!==VERSION||raw.grounding_contract!==GROUNDING_CONTRACT)throw new Error('Incompatible presentation format: grounding contract 3 is required.');
   if(!Array.isArray(raw.slides)||raw.slides.length<1||raw.slides.length>500)throw new Error('A presentation must contain 1–500 slides.');
@@ -155,8 +175,8 @@ export function validateDocument(raw) {
       e.fill=safeColor(v.fill,e.fill);e.stroke=safeColor(v.stroke,'none');e.locked=!!v.locked;e.hidden=!!v.hidden;e.groupId=typeof v.groupId==='string'?v.groupId.slice(0,100):null;e.animation=['none','fade','rise','zoom'].includes(v.animation)?v.animation:'none';
       if(e.type==='text') {e.text=String(v.text||'').slice(0,100000);e.fontFamily=String(v.fontFamily||'Arial').replace(/[^a-zA-Z0-9 ,\-]/g,'').slice(0,100);e.fontSize=clamp(+v.fontSize||40,4,600);e.bold=!!v.bold;e.italic=!!v.italic;e.underline=!!v.underline;e.align=['left','center','right'].includes(v.align)?v.align:'left';e.valign=['top','middle','bottom'].includes(v.valign)?v.valign:'top';e.lineHeight=clamp(+v.lineHeight||1.2,0.8,3);e.padding=clamp(+v.padding||0,0,200);}
       if(e.type==='image'){if(typeof v.src!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v.src)||v.src.length>30000000)throw new Error('Pictures must be embedded PNG, JPEG or WebP files, at most 22 MB each.');e.src=v.src;e.fit=v.fit==='contain'?'contain':'cover';}
-      if(e.type==='chart'){e.chartType=['bar','line','donut'].includes(v.chartType)?v.chartType:'bar';e.labels=(v.labels||['A','B','C']).slice(0,30).map(x=>String(x).slice(0,80));e.values=(v.values||[20,40,70]).slice(0,e.labels.length).map(x=>clamp(Number(x)||0,0,1e12));while(e.values.length<e.labels.length)e.values.push(0);e.showValues=v.showValues!==false;}
-      if(e.type==='table'){if(!Array.isArray(v.cells)||!v.cells.length)throw new Error('Invalid table.');e.cells=v.cells.slice(0,30).map(r=>Array.isArray(r)?r.slice(0,12).map(c=>String(c).slice(0,1000)):['']);e.fontSize=clamp(+v.fontSize||22,8,100);}
+      if(e.type==='chart'){validateDataStyle(e,v);e.chartType=['bar','line','donut'].includes(v.chartType)?v.chartType:'bar';e.labels=(v.labels||['A','B','C']).slice(0,30).map(x=>String(x).slice(0,80));e.values=(v.values||[20,40,70]).slice(0,e.labels.length).map(x=>clamp(Number(x)||0,0,1e12));while(e.values.length<e.labels.length)e.values.push(0);e.showValues=v.showValues!==false;}
+      if(e.type==='table'){if(!Array.isArray(v.cells)||!v.cells.length)throw new Error('Invalid table.');e.cells=v.cells.slice(0,30).map(r=>Array.isArray(r)?r.slice(0,12).map(c=>String(c).slice(0,1000)):['']);e.fontSize=clamp(+v.fontSize||22,8,100);validateDataStyle(e,v);validateTableStyle(e,v);}
       e.grounding=validateGrounding(e,v.grounding,annotationsSeen);return e;
     });return out;
   });return d;

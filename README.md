@@ -33,7 +33,8 @@ npm run build:site
 - Text boxes: inline editing, Unicode, wrapping, font selection, size, bold/italic/underline, paragraph alignment, line spacing, and bullets. Formatting applies to the entire text box.
 - Objects: common vector shapes, lines, raster pictures, process diagrams, logical grouping, lock/hide, layering, duplicate, copy/paste, and transactional undo/redo.
 - Slides: creation, duplication, deletion, renaming, drag ordering, slide sorter, layouts, themes, backgrounds, and dimensions.
-- Data: editable single-series bar, line, and donut charts; simple tables with tab-separated data editing.
+- Data: editable single-series bar, line, and donut charts with a highlighted bar; tables with tab-separated data editing, relative column widths, per-column alignment, highlighted rows, optional banding and a table font.
+- Themes: nine light and dark themes. Each defines color tokens (`@bg`, `@ink`, `@dark`, `@light`, `@accent`, `@secondary`, `@muted`, `@line`, `@surface`, `@highlight`) plus a `mode` and heading and body fonts for authors.
 - Presentation: slideshow controller, notes panel, transitions, click-triggered entrances, laser pointer, blackout, and timer.
 - Files: native `.aurelia` project format, browser-local autosave, PPTX export and best-effort import, PNG/SVG export, slide-image archives, and browser printing.
 - Example: a seven-slide presentation built from editable objects.
