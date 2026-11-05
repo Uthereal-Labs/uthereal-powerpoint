@@ -2,11 +2,11 @@ import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {resolve,dirname} from 'node:path';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-const modules=['layouts','core','renderer','demo','icons','pptx','reference-presentation','app'];
+const modules=['styles','components','layouts','core','renderer','demo','icons','pptx','reference-presentation','app'];
 const parts=await Promise.all(modules.map(async name=>{
   const code=await readFile(resolve(root,`src/${name}.js`),'utf8');
   // The source uses top-level, single-line imports and named declaration exports only.
-  const bundled=code.replace(/^import .+;\r?\n/gm,'').replace(/^export /gm,'');
+  const bundled=code.replace(/^import .+;\r?\n/gm,'').replace(/^export \{[^}]+\};?\r?\n/gm,'').replace(/^export /gm,'');
   if(/^\s*(import|export)\s/m.test(bundled))throw new Error(`Unsupported module syntax in ${name}`);
   return `// ─── src/${name}.js ───\n${bundled}`;
 }));

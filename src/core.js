@@ -1,6 +1,8 @@
+import {STYLE_FIELDS,STYLE_DEFAULTS,PRESENTATION_FONTS,TEXT_ROLES,validatePresentationStyle,validateTypography,VALID_COLORS,resolveStyle,resolveTypography,captureTypography} from './styles.js';
 import {createLayouts,validateComponents,remapComponents,componentElementIds} from './layouts.js';
 /** Aurelia document/geometry/command kernel. No browser or renderer dependencies. */
-export const VERSION = 1;
+export const VERSION = 2;
+export {STYLE_FIELDS,STYLE_DEFAULTS,PRESENTATION_FONTS};
 export const GROUNDING_CONTRACT = 3;
 export const GROUNDING_CAPABILITY = 'grounding_lifecycle_v3';
 /** Deck themes. Color keys resolve as @tokens; mode and fonts describe the theme to authors. */
@@ -20,7 +22,7 @@ export const clone = value => structuredClone(value);
 export const uid = (prefix='e') => `${prefix}_${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)+Date.now().toString(36)}`;
 export const clamp = (n,a,b) => Math.max(a,Math.min(b,n));
 export const color = (value,theme='studio') => value?.startsWith('@') ? ((THEME_COLOR_TOKENS.includes(value.slice(1))&&THEMES[theme]?.[value.slice(1)]) || '#17313A') : (value || '#000000');
-export const fontFamilyFor=(element,theme='studio')=>element.fontRole==='heading'?(THEMES[theme]?.headingFont||'Arial'):element.fontRole==='body'?(THEMES[theme]?.bodyFont||'Arial'):(element.fontFamily||'Arial');
+export const fontFamilyFor=(element,theme='studio',style={})=>element.textRole?(element.typography?.fontFamily||element.fontFamily||'Arial'):element.fontRole==='heading'?(style?.headingFont||THEMES[theme]?.headingFont||'Arial'):element.fontRole==='body'?(style?.bodyFont||THEMES[theme]?.bodyFont||'Arial'):(element.fontFamily||'Arial');
 /** Optional, non-overlapping UTF-16 color spans; plain text remains the content contract. */
 export function textColorRuns(element,start=0,end=element.text.length){
   const runs=[];let offset=start;
@@ -32,16 +34,23 @@ export function textColorRuns(element,start=0,end=element.text.length){
   if(offset<end)runs.push({text:element.text.slice(offset,end),fill:element.fill});
   return runs;
 }
+function validateTextColors(text,spans){
+  if(!Array.isArray(spans)||spans.length>10000)throw new Error('Invalid text color spans.');
+  let end=0;return spans.map(span=>{
+    if(!span||!Number.isInteger(span.start)||!Number.isInteger(span.end)||span.start<end||span.start<0||span.end<=span.start||span.end>text.length||typeof span.fill!=='string'||!VALID_COLORS.test(span.fill))throw new Error('Invalid text color span.');
+    end=span.end;return {start:span.start,end:span.end,fill:span.fill};
+  });
+}
 export function setTextColor(element,fill,start=null,end=null){
-  if(element.type==='text'&&VALID_COLORS.test(fill)&&start===null&&end===null){element.fill=fill;delete element.textColors;return;}
+  if(element.type==='text'&&VALID_COLORS.test(fill)&&start===null&&end===null){updateElementContent(element,{fill});return;}
   if(element.type!=='text'||!VALID_COLORS.test(fill)||!Number.isInteger(start)||!Number.isInteger(end)||start<0||end>element.text.length||start>=end)throw new Error('Invalid text color range.');
   const spans=[];
   for(const span of element.textColors||[]){
     if(span.end<=start||span.start>=end)spans.push({...span});
     else{if(span.start<start)spans.push({...span,end:start});if(span.end>end)spans.push({...span,start:end});}
   }
-  if(fill!==element.fill)spans.push({start,end,fill});
-  normalizeTextColors(element,spans);
+  spans.push({start,end,fill});
+  const changed={};normalizeTextColors(changed,spans);updateElementContent(element,{textColors:changed.textColors||[]});
 }
 function normalizeTextColors(element,spans){
   const merged=[];
@@ -50,7 +59,19 @@ function normalizeTextColors(element,spans){
 }
 let layoutTextMeasurer=null;
 export function configureLayoutMeasurement(measure){if(typeof measure!=='function')throw new Error('A text measurer is required.');layoutTextMeasurer=measure;}
-export const layouts=createLayouts({makeElement,uid,fontFamilyFor,setContent:updateElementContent,measureText:(...args)=>{if(!layoutTextMeasurer)throw new Error('Adaptive layout text measurement is unavailable.');return layoutTextMeasurer(...args);}});
+export const layouts=createLayouts({makeElement,uid,resolvePresentationStyle,resolveTypography,setContent:updateElementContent,measureText:(...args)=>{if(!layoutTextMeasurer)throw new Error('Adaptive layout text measurement is unavailable.');return layoutTextMeasurer(...args);}});
+export function resolvePresentationStyle(document){return resolveStyle(document,THEMES);}
+export function setPresentationStyle(document,patch={}, {reset=false}={}){
+ const updates=validatePresentationStyle(patch,{partial:true}),next=reset?{}:{...(document.style||{})};
+ for(const [key,value]of Object.entries(updates)){if(value===null)delete next[key];else next[key]=value;}
+ if(Object.keys(next).length)document.style=next;else delete document.style;
+ return {style:resolvePresentationStyle(document),diagnostics:layouts.normalize(document)};
+}
+export function resetElementTypography(document,ids){
+ const targets=new Set(ids);
+ for(const slide of document.slides){layouts.assertProperties(slide,slide.elements.filter(e=>targets.has(e.id)).map(e=>e.id),{fontSize:18});for(const element of slide.elements)if(targets.has(element.id)&&element.textRole){delete element.typography;delete element.textColors;}}
+ return layouts.normalize(document);
+}
 export const escapeHTML = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function makeElement(type='rect', props={}) {
   return { id:uid(), type, name:({text:'Text box',rect:'Rectangle',roundRect:'Rounded rectangle',ellipse:'Ellipse',line:'Line',triangle:'Triangle',diamond:'Diamond',arrow:'Arrow',star:'Star',image:'Picture',chart:'Chart',table:'Table'})[type]||type,
@@ -138,6 +159,9 @@ function continueGrounding(element) {
 }
 export function updateElementContent(element,props,textEdit=null){
   const before=contentSignature(element);
+  if(element.type==='text'&&'fill'in props&&(typeof props.fill!=='string'||!VALID_COLORS.test(props.fill)))throw new Error('Invalid text color.');
+  if(element.type==='text'&&'textColors'in props)props={...props,textColors:validateTextColors(props.text??element.text,props.textColors)};
+  captureTypography(element,props);
   if(element.type==='text'&&typeof props.text==='string'&&props.text!==element.text&&element.textColors&&!('textColors'in props)){
     const old=element.text,next=props.text;let start=0,suffix=0;
     // UI edits carry exact UTF-16 bounds so repeated words keep their own formatting.
@@ -156,7 +180,7 @@ export function updateElementContent(element,props,textEdit=null){
     normalizeTextColors(element,spans);
   }
   Object.assign(element,props);
-  if(element.type==='text'&&'fill'in props&&!('textColors'in props))delete element.textColors;
+  if(element.type==='text'&&('fill'in props&&!('textColors'in props)||element.textColors?.length===0))delete element.textColors;
   if('fontFamily'in props&&!('fontRole'in props))delete element.fontRole;
   if(contentSignature(element)!==before)element.grounding=continueGrounding(element);
 }
@@ -203,7 +227,6 @@ export function importExternalDocument(raw) {
   return validateDocument(out);
 }
 const VALID_TYPES=new Set(['rect','roundRect','ellipse','triangle','diamond','arrow','star','line','text','image','chart','table']);
-const VALID_COLORS=/^(?:@[a-z]+|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|none)$/;
 const fontName=v=>String(v).replace(/[^a-zA-Z0-9 ,\-]/g,'').slice(0,100);
 /** Optional chart/table styling; absent properties stay absent so older documents round-trip unchanged. */
 function validateDataStyle(e,v){
@@ -218,10 +241,33 @@ function validateTableStyle(e,v){
   if(typeof v.banded==='boolean')e.banded=v.banded;
   if(typeof v.headerColor==='string'&&VALID_COLORS.test(v.headerColor))e.headerColor=v.headerColor;
 }
+/** One-time v1 conversion. It never mutates the caller or invents content/components. */
+export function migrateDocument(raw){
+ if(!raw||raw.format!=='aurelia'||raw.version!==1||raw.grounding_contract!==GROUNDING_CONTRACT||!Array.isArray(raw.slides))throw new Error('Unsupported previous presentation format.');
+ const out=clone(raw),sx=out.width/1280,sy=out.height/720;
+ for(const slide of out.slides){
+  if(!Array.isArray(slide.elements))throw new Error('Invalid previous presentation objects.');
+  // Validate the old membership graph before assigning semantic styles.
+  const seen=new Set([out.id,...out.slides.map(item=>item.id),...out.slides.flatMap(item=>(item.elements||[]).map(element=>element.id))]);
+  const components=validateComponents(slide.components,slide.elements,seen,{previous:true});
+  const elements=new Map(slide.elements.map(element=>[element.id,element]));
+  const assign=(id,role,oldSize,oldFontRole)=>{if(!id)return;const element=elements.get(id),local={};if(element.fontSize!==oldSize)local.fontSize=Math.max(18,element.fontSize);if(element.lineHeight!==1.2)local.lineHeight=element.lineHeight;if(element.fontRole!==oldFontRole)local.fontFamily=element.fontFamily||'Arial';const defaults={bold:['title','componentHeading','label','value','takeaway'].includes(role),italic:false,underline:false,align:'left',valign:'top'};for(const [key,value]of Object.entries(defaults))if(element[key]!==undefined&&element[key]!==value)local[key]=element[key];element.textRole=role;if(Object.keys(local).length)element.typography=validateTypography(local);};
+  for(const component of components||[]){
+   const standard={x:72*sx,y:190*sy,w:1136*sx,h:440*sy};component.version=2;if(Object.keys(standard).every(key=>Math.abs(component.frame[key]-standard[key])<.0001))component.frame=null;else if(component.title_id&&elements.get(component.title_id).text?.trim()){const top=Math.min(component.frame.y,elements.get(component.title_id).y);component.frame={...component.frame,y:top,h:component.frame.y+component.frame.h-top};}
+   assign(component.title_id,'title',38,'heading');assign(component.takeaway_id,'takeaway',32,'heading');
+   const rows=component.steps||component.items||component.figures||component.points||[];
+   for(const row of rows){assign(row.title_id,'componentHeading',24,'heading');assign(row.body_id,'body',18,'body');assign(row.number_id,'body',18,'body');assign(row.value_id,'value',56,'heading');assign(row.label_id,'label',22,'body');assign(row.context_id,'body',18,'body');assign(row.text_id,'body',22,'body');}
+  }
+  if(components)slide.components=components;
+ }
+ out.version=VERSION;return out;
+}
 export function validateDocument(raw) {
+  if(raw?.version===1)raw=migrateDocument(raw);
   if(!raw||raw.format!=='aurelia'||raw.version!==VERSION||raw.grounding_contract!==GROUNDING_CONTRACT)throw new Error('Incompatible presentation format: grounding contract 3 is required.');
   if(!Array.isArray(raw.slides)||raw.slides.length<1||raw.slides.length>500)throw new Error('A presentation must contain 1–500 slides.');
   const d=makeDocument(); d.id=String(raw.id||d.id);d.title=String(raw.title||'Untitled presentation').slice(0,200);d.width=clamp(Number(raw.width)||1280,320,4096);d.height=clamp(Number(raw.height)||720,240,4096);d.theme=THEMES[raw.theme]?raw.theme:'studio';
+  if(raw.style!==undefined){const style=validatePresentationStyle(raw.style);if(Object.keys(style).length)d.style=style;}
   if(!validIdentity(raw.id))throw new Error('Invalid presentation identity.');
   const seen=new Set([d.id]),annotationsSeen=new Set();
   function safeId(id){if(!validIdentity(id)||seen.has(id))throw new Error('Presentation object IDs must be unique.');seen.add(id);return id;}
@@ -236,16 +282,11 @@ export function validateDocument(raw) {
       e.w=clamp(e.w,1,16384);e.h=clamp(e.h,1,16384);e.opacity=clamp(e.opacity,0,1);e.strokeWidth=clamp(e.strokeWidth,0,100);
       e.fill=safeColor(v.fill,e.fill);e.stroke=safeColor(v.stroke,'none');e.locked=!!v.locked;e.hidden=!!v.hidden;e.groupId=typeof v.groupId==='string'?v.groupId.slice(0,100):null;e.animation=['none','fade','rise','zoom'].includes(v.animation)?v.animation:'none';
       if(e.type==='text') {e.text=String(v.text||'').slice(0,100000);e.fontFamily=String(v.fontFamily||'Arial').replace(/[^a-zA-Z0-9 ,\-]/g,'').slice(0,100);e.fontSize=clamp(+v.fontSize||40,4,600);e.bold=!!v.bold;e.italic=!!v.italic;e.underline=!!v.underline;e.align=['left','center','right'].includes(v.align)?v.align:'left';e.valign=['top','middle','bottom'].includes(v.valign)?v.valign:'top';e.lineHeight=clamp(+v.lineHeight||1.2,0.8,3);e.padding=clamp(+v.padding||0,0,200);}
-      if(e.type==='text'&&v.textColors!==undefined){
-        if(!Array.isArray(v.textColors)||v.textColors.length>10000)throw new Error('Invalid text color spans.');
-        let end=0;e.textColors=v.textColors.map(span=>{
-          if(!span||!Number.isInteger(span.start)||!Number.isInteger(span.end)||span.start<end||span.start<0||span.end<=span.start||span.end>e.text.length||typeof span.fill!=='string'||!VALID_COLORS.test(span.fill))throw new Error('Invalid text color span.');
-          end=span.end;return{start:span.start,end:span.end,fill:span.fill};
-        });if(!e.textColors.length)delete e.textColors;
-      }
+      if(e.type==='text'&&v.textColors!==undefined){const spans=validateTextColors(e.text,v.textColors);if(spans.length)e.textColors=spans;}
       if(e.type==='image'){if(typeof v.src!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v.src)||v.src.length>30000000)throw new Error('Pictures must be embedded PNG, JPEG or WebP files, at most 22 MB each.');e.src=v.src;e.fit=v.fit==='contain'?'contain':'cover';}
       if(e.type==='chart'){validateDataStyle(e,v);e.chartType=['bar','line','donut'].includes(v.chartType)?v.chartType:'bar';e.labels=(v.labels||['A','B','C']).slice(0,30).map(x=>String(x).slice(0,80));e.values=(v.values||[20,40,70]).slice(0,e.labels.length).map(x=>clamp(Number(x)||0,0,1e12));while(e.values.length<e.labels.length)e.values.push(0);e.showValues=v.showValues!==false;}
       if(e.type==='table'){if(!Array.isArray(v.cells)||!v.cells.length)throw new Error('Invalid table.');e.cells=v.cells.slice(0,30).map(r=>Array.isArray(r)?r.slice(0,12).map(c=>String(c).slice(0,1000)):['']);e.fontSize=clamp(+v.fontSize||22,8,100);validateDataStyle(e,v);validateTableStyle(e,v);}
+      if(v.textRole!==undefined){if(e.type!=='text'||!Object.hasOwn(TEXT_ROLES,v.textRole))throw new Error('Invalid semantic text role.');e.textRole=v.textRole;if(v.typography!==undefined)e.typography=validateTypography(v.typography);}
       if(['text','table','chart'].includes(e.type)&&['heading','body'].includes(v.fontRole))e.fontRole=v.fontRole;
       e.grounding=validateGrounding(e,v.grounding,annotationsSeen);return e;
     });
@@ -282,7 +323,7 @@ export function snapMove(bounds,others,width,height,threshold=7) {
   return {dx:x.delta,dy:y.delta,lines:[...(x.line===null?[]:[{axis:'x',value:x.line}]),...(y.line===null?[]:[{axis:'y',value:y.line}])]};
 }
 export class Store {
-  constructor(doc=makeDocument()){this.doc=doc;this.active=doc.slides[0].id;this.selection=new Set();this.past=[];this.future=[];this.listeners=new Set();this.pending=null;this.clipboard=null;this.revision=0;this.maxHistory=100;this.maxHistoryBytes=40*1024*1024;}
+  constructor(doc=makeDocument()){if(doc.version===1){doc=validateDocument(doc);layouts.normalize(doc);}this.doc=doc;this.active=doc.slides[0].id;this.selection=new Set();this.past=[];this.future=[];this.listeners=new Set();this.pending=null;this.clipboard=null;this.revision=0;this.maxHistory=100;this.maxHistoryBytes=40*1024*1024;}
   get slide(){return this.doc.slides.find(s=>s.id===this.active)||this.doc.slides[0];}
   get selected(){return this.slide.elements.filter(e=>this.selection.has(e.id));}
   onChange(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn);}
@@ -303,8 +344,20 @@ export class Store {
   restore(snapshot){const state=JSON.parse(snapshot);this.doc=state.doc;this.active=state.active;this.selection=new Set([...this.selection].filter(id=>this.slide.elements.some(e=>e.id===id)));this.revision++;this.emit('restore');}
   undo(){if(this.pending)this.commit();const cmd=this.past.pop();if(!cmd)return;this.future.push(cmd);this.restore(cmd.before);}
   redo(){const cmd=this.future.pop();if(!cmd)return;this.past.push(cmd);this.restore(cmd.after);}
-  replace(doc){const validated=validateDocument(doc);layouts.normalize(validated);this.doc=validated;this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('restore');}
+  replace(doc){const validated=validateDocument(doc);layouts.normalize(validated);this.doc=validated;this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('load');}
   setElementContent(element,props,document=this.doc,textEdit=null){const slide=document.slides.find(item=>item.elements.some(value=>value.id===element.id));if(!slide)throw new Error('Unknown content element.');layouts.assertProperties(slide,[element.id],props);if(element.locked)throw new Error('Element is locked');updateElementContent(element,props,textEdit);layouts.normalize(document);}
+  colorText(ids,fill,range=null){
+    if(range!==null&&(!range||typeof range!=='object'||!Number.isInteger(range.start)||!Number.isInteger(range.end)))throw new Error('Invalid text color range.');
+    if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length||range!==null&&ids.length!==1)throw new Error('Choose text objects, or one text range.');
+    const changes=ids.map(id=>{
+      const element=this.slide.elements.find(item=>item.id===id);if(!element||element.type!=='text')throw new Error('Unknown text object.');
+      const draft=clone(element);setTextColor(draft,fill,range?.start??null,range?.end??null);
+      const props=range?{textColors:draft.textColors||[]}:{fill};
+      layouts.assertProperties(this.slide,[id],props);if(element.locked)throw new Error('Element is locked');
+      return {element,props};
+    });
+    this.transaction(range?'Color selected text':'Color text box',()=>{for(const {element,props}of changes)this.setElementContent(element,props);});
+  }
   normalizeGrounding(document){for(const element of document.slides.flatMap(slide=>slide.elements))element.grounding=continueGrounding(element);return document;}
   inspectGrounding(objectIds=null){
     if(objectIds!==null&&(!Array.isArray(objectIds)||objectIds.some(id=>!validIdentity(id))))throw new Error('Invalid grounding target IDs.');
@@ -331,7 +384,8 @@ export class Store {
       const members=componentElementIds(component),visible=members.filter(id=>!elements.get(id).hidden);
       if(visible.length&&visible.every(id=>ids.has(id)))for(const id of members)ids.add(id);
     }
-    return this.slide.elements.filter(element=>ids.has(element.id));
+    const complete=new Set((this.slide.components||[]).filter(component=>componentElementIds(component).every(id=>ids.has(id))).flatMap(componentElementIds));
+    return this.slide.elements.filter(element=>ids.has(element.id)).map(element=>{if(!element.textRole||complete.has(element.id))return element;const frozen=clone(element);delete frozen.textRole;delete frozen.typography;delete frozen.fontRole;return frozen;});
   }
   copySelected(){
     const elements=this.#copySelectionElements(this.selected),selectedIds=new Set(elements.map(element=>element.id));
@@ -391,7 +445,9 @@ export class Store {
     if(updated)this.emit('grounding');return {updated};
   }
   add(element){this.transaction(`Insert ${element.type}`,()=>this.slide.elements.push(element));this.select([element.id]);return element;}
-  updateSelected(props,label='Format objects'){layouts.assertProperties(this.slide,this.selected.map(element=>element.id),props);this.transaction(label,()=>{for(const e of this.selected)if(!e.locked)updateElementContent(e,props);});}
+  updateSelected(props,label='Format objects'){layouts.assertProperties(this.slide,this.selected.map(element=>element.id),props);this.transaction(label,()=>{for(const e of this.selected)if(!e.locked){updateElementContent(e,props);}});}
+  setPresentationStyle(patch={},options={}){let result;this.transaction(options.reset?'Reset presentation style':'Apply presentation style',()=>{result=setPresentationStyle(this.doc,patch,options);});return result;}
+  resetSelectedTypography(){this.transaction('Reset to presentation style',()=>resetElementTypography(this.doc,[...this.selection]));}
   deleteSelected(){layouts.assertFreeform(this.slide,this.selected.map(element=>element.id));this.transaction('Delete objects',()=>{this.slide.elements=this.slide.elements.filter(e=>!this.selection.has(e.id)||e.locked);});this.select([]);}
   duplicateSelected(){const idMap=new Map(),els=copyElements(this.#copySelectionElements(this.selected.filter(e=>!e.locked)),{offset:24,idMap}),components=remapComponents(this.slide.components,idMap,uid,24);this.transaction('Duplicate objects',()=>{this.slide.elements.push(...els);if(components.length)(this.slide.components??=[]).push(...components);});this.select(els.map(e=>e.id));}
   addSlide(layout='blank'){const s=makeSlide(layout,this.doc.theme);this.transaction('New slide',()=>{const i=this.doc.slides.findIndex(s=>s.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);return s;}

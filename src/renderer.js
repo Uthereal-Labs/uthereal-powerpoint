@@ -39,7 +39,7 @@ fn distance(p:vec2f,h:vec2f,kind:u32,r:f32)->f32 {
 @fragment fn textureFragment(v:Vertex)->@location(0) vec4f {return textureSample(tile,textureSampler,v.local)*items[v.index].transform.z;}
 `;
 export function rgba(value,theme){const c=color(value,theme);if(c==='none')return[0,0,0,0];const h=c.slice(1);return[parseInt(h.slice(0,2),16)/255,parseInt(h.slice(2,4),16)/255,parseInt(h.slice(4,6),16)/255,h.length===8?parseInt(h.slice(6,8),16)/255:1];}
-export function fontCSS(e,theme='studio'){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${fontFamilyFor(e,theme)}", sans-serif`;}
+export function fontCSS(e,theme='studio',style={}){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${fontFamilyFor(e,theme,style)}", sans-serif`;}
 export function wrapText(ctx,text,maxWidth){
   return wrapTextLines(ctx,text,maxWidth).map(line=>line.text);
 }
@@ -60,18 +60,54 @@ export function wrapTextLines(ctx,text,maxWidth){
     }lines.push({text:line.trimEnd(),start});offset+=para.length+(paragraphs[paragraph+1]?.length||0);
   }return lines;
 }
-export function drawText2D(ctx,e,theme,scrollTop=0){
-  ctx.font=fontCSS(e,theme);ctx.textBaseline='alphabetic';ctx.fillStyle=color(e.fill,theme);ctx.textAlign=e.align||'left';
+const textClipCache=new Map();
+let textClipMeasurer=null;
+/** Measure visual selection rectangles on one shaped text node, including bidi runs and ligatures. */
+function textRunClips(ctx,text,runs){
+  const direction=ctx.direction==='inherit'&&ctx.canvas?.nodeType===1?getComputedStyle(ctx.canvas).direction:ctx.direction==='rtl'?'rtl':'ltr',key=JSON.stringify([ctx.font,direction,ctx.fontKerning,ctx.fontStretch,ctx.fontVariantCaps,ctx.letterSpacing,ctx.wordSpacing,text,runs.map(run=>run.text.length)]);
+  if(textClipCache.has(key))return textClipCache.get(key);
+  if(!globalThis.document?.createRange){
+    let prefix='';return runs.map(run=>{const x=ctx.measureText(prefix).width;prefix+=run.text;return [{x,w:ctx.measureText(prefix).width-x}];});
+  }
+  if(!textClipMeasurer){
+    textClipMeasurer=document.createElement('span');textClipMeasurer.setAttribute('aria-hidden','true');
+    Object.assign(textClipMeasurer.style,{position:'fixed',left:'0',top:'-10000px',visibility:'hidden',whiteSpace:'pre',pointerEvents:'none',unicodeBidi:'isolate'});
+    document.body.append(textClipMeasurer);document.fonts?.addEventListener('loadingdone',()=>textClipCache.clear());
+  }
+  Object.assign(textClipMeasurer.style,{font:ctx.font,direction,fontKerning:ctx.fontKerning||'auto',fontStretch:ctx.fontStretch||'normal',fontVariantCaps:ctx.fontVariantCaps||'normal',letterSpacing:ctx.letterSpacing||'0px',wordSpacing:ctx.wordSpacing||'0px'});
+  textClipMeasurer.textContent=text;
+  const origin=textClipMeasurer.getBoundingClientRect(),range=document.createRange();let start=0;
+  const clips=runs.map(run=>{
+    range.setStart(textClipMeasurer.firstChild,start);start+=run.text.length;range.setEnd(textClipMeasurer.firstChild,start);
+    return Array.from(range.getClientRects(),rect=>({x:rect.left-origin.left,w:rect.width}));
+  });
+  if(textClipCache.size>=128)textClipCache.delete(textClipCache.keys().next().value);
+  textClipCache.set(key,clips);return clips;
+}
+export function drawText2D(ctx,e,theme,scrollTop=0,style={}){
+  ctx.font=fontCSS(e,theme,style);ctx.textBaseline='alphabetic';ctx.fillStyle=color(e.fill,theme);ctx.textAlign=e.align||'left';
   const pad=e.padding??4,fs=e.fontSize||24,lh=fs*(e.lineHeight||1.2),lines=wrapTextLines(ctx,e.text,e.w-2*pad),height=lines.length*lh;
   let top=pad;if(e.valign==='middle')top=Math.max(pad,(e.h-height)/2);if(e.valign==='bottom')top=Math.max(pad,e.h-height-pad);
   const x=e.align==='center'?e.w/2:e.align==='right'?e.w-pad:pad;
   for(let i=0;i<lines.length;i++){
     const y=top+i*lh+fs*.85;if(y-fs>e.h+scrollTop)break;if(y+lh<scrollTop)continue;
     const line=lines[i],width=ctx.measureText(line.text).width,left=x-(e.align==='center'?width/2:e.align==='right'?width:0);
-    ctx.textAlign='left';let prefix='';
-    for(const run of textColorRuns(e,line.start,line.start+line.text.length)){
-      const dx=ctx.measureText(prefix).width;ctx.fillStyle=color(run.fill,theme);ctx.fillText(run.text,left+dx,y);prefix+=run.text;
-      if(e.underline)ctx.fillRect(left+dx,y+fs*.12,ctx.measureText(prefix).width-dx,Math.max(1,fs/20));
+    ctx.textAlign='left';
+    const runs=textColorRuns(e,line.start,line.start+line.text.length),clips=runs.length>1?textRunClips(ctx,line.text,runs):null;
+    for(const [index,run]of runs.entries()){
+      if(run.fill==='none')continue;
+      if(clips){
+        ctx.save();ctx.beginPath();
+        for(const rect of clips[index]){
+          // Keep glyph overhang at the visual line edges; internal boundaries divide the same shaped ink.
+          const before=rect.x<.01?fs:0,after=rect.x+rect.w>=width-.01?fs:0;
+          ctx.rect(left+rect.x-before,y-fs*2,rect.w+before+after,fs*4+lh);
+        }
+        ctx.clip();
+      }
+      ctx.fillStyle=color(run.fill,theme);ctx.fillText(line.text,left,y);
+      if(e.underline)ctx.fillRect(left,y+fs*.12,width,Math.max(1,fs/20));
+      if(clips)ctx.restore();
     }
   }
 }
@@ -123,7 +159,7 @@ export function expandElement(e){
     txt(labels[i]||'',x,top+H+10,bw,44,{fontSize:18,align:'center'});
   });return out;
 }
-export function flattenScene(elements){return elements.filter(e=>!e.hidden).flatMap(expandElement);}
+export function flattenScene(elements,theme=null,style={}){const leaves=elements.filter(e=>!e.hidden).flatMap(expandElement);return theme?leaves.map(e=>e.fontRole?{...e,fontFamily:fontFamilyFor(e,theme,style),fontRole:undefined}:e):leaves;}
 export class ImagePool{
   constructor(onLoad=()=>{}){this.items=new Map();this.onLoad=onLoad;}
   get(src){if(this.items.has(src))return this.items.get(src);const image=new Image();image.onload=()=>this.onLoad();image.onerror=()=>this.onLoad();image.src=src;this.items.set(src,image);return image;}
@@ -148,7 +184,7 @@ export function drawLeaf2D(ctx,e,theme,images){
 }
 export function paintSlide2D(canvas,slide,doc,images,{scale=1,ignoreId=null}={}){
   const ctx=canvas.getContext('2d');ctx.save();ctx.setTransform(scale,0,0,scale,0,0);ctx.clearRect(0,0,doc.width,doc.height);ctx.fillStyle=color(slide.bg,doc.theme);ctx.fillRect(0,0,doc.width,doc.height);
-  for(const e of flattenScene(slide.elements))if(e.id!==ignoreId)drawLeaf2D(ctx,e,doc.theme,images);ctx.restore();
+  for(const e of flattenScene(slide.elements,doc.theme,doc.style))if(e.id!==ignoreId)drawLeaf2D(ctx,e,doc.theme,images);ctx.restore();
 }
 function tileSignature(e,theme,resolution){
   if(e.type==='image')return `${e.id}|${e.w}|${e.h}|${e.fit}|${e.src.length}|${resolution}`;
@@ -198,7 +234,7 @@ export class SceneRenderer{
     if(this.mode==='initializing'||this.disposed)return;const start=performance.now();this.frame++;this.lastStats.uploads=0;
     const width=Math.max(1,Math.round(cssWidth*dpr)),height=Math.max(1,Math.round(cssHeight*dpr));if(this.canvas.width!==width||this.canvas.height!==height){this.canvas.width=width;this.canvas.height=height;}
     if(this.mode==='canvas'){paintSlide2D(this.canvas,slide,doc,this.images,{scale:width/doc.width,ignoreId});this.lastStats={...this.lastStats,ms:performance.now()-start,objects:slide.elements.length,draws:slide.elements.length};return;}
-    const elements=flattenScene(slide.elements).filter(e=>e.id!==ignoreId);this.ensureCapacity(elements.length||1);const data=this.data;
+    const elements=flattenScene(slide.elements,doc.theme,doc.style).filter(e=>e.id!==ignoreId);this.ensureCapacity(elements.length||1);const data=this.data;
     elements.forEach((e,i)=>{const n=i*20,a=(e.rotation||0)*Math.PI/180;data.set([e.x,e.y,e.w,e.h,Math.cos(a),Math.sin(a),e.opacity??1,SHAPE_IDS[e.type]??0,...rgba(e.fill,doc.theme),...rgba(e.stroke||'none',doc.theme),e.radius||0,e.strokeWidth||0,0,0],n);});
     this.device.queue.writeBuffer(this.uniform,0,new Float32Array([doc.width,doc.height,width,height]));if(elements.length)this.device.queue.writeBuffer(this.instances,0,data.buffer,0,elements.length*80);
     const encoder=this.device.createCommandEncoder({label:'Aurelia frame'}),clear=rgba(slide.bg,doc.theme),pass=encoder.beginRenderPass({colorAttachments:[{view:this.context.getCurrentTexture().createView(),clearValue:{r:clear[0],g:clear[1],b:clear[2],a:1},loadOp:'clear',storeOp:'store'}]});let draws=0;

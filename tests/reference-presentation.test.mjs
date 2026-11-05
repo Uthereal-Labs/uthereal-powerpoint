@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {makeDocument,makeElement} from '../src/core.js';
+import {layouts,makeDocument,makeElement} from '../src/core.js';
 import {composeReferencePresentation} from '../src/reference-presentation.js';
 import {exportPPTX,importPPTX,unzipSafe} from '../src/pptx.js';
 
@@ -33,5 +33,13 @@ test('reference footers and paginated slides stay outside the authored document'
 test('reference footer rejects occupied space instead of overlapping authored content',()=>{
   const doc=fixture();
   doc.slides[0].elements.push(makeElement('text',{x:100,y:680,w:200,h:25,text:'Existing footer'}));
-  assert.throws(()=>composeReferencePresentation(doc,{entries:[{number:1,text:'Citation'}],slides:[{slide_id:doc.slides[0].id,numbers:[1]}]},ctx),/bottom 48 px reserved/);
+  assert.throws(()=>composeReferencePresentation(doc,{entries:[{number:1,text:'Citation'}],slides:[{slide_id:doc.slides[0].id,numbers:[1]}]},ctx),/bottom 7% reserved/);
+});
+
+
+test('reference footer allows content touching the shared boundary and rejects positive overlap',()=>{
+ const doc=fixture(),boundary=layouts.area(doc).footer.y,content=makeElement('text',{x:100,y:boundary-40,w:200,h:40,text:'Fits exactly'});
+ doc.slides[0].elements.push(content);const presentation={entries:[{number:1,text:'Citation'}],slides:[{slide_id:doc.slides[0].id,numbers:[1]}]};
+ assert.doesNotThrow(()=>composeReferencePresentation(doc,presentation,ctx));content.y+=.001;assert.throws(()=>composeReferencePresentation(doc,presentation,ctx),/bottom 7% reserved/);
+ content.hidden=true;assert.doesNotThrow(()=>composeReferencePresentation(doc,presentation,ctx));
 });

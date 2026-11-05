@@ -1,4 +1,4 @@
-import {layouts,copySlide,configureLayoutMeasurement,fontFamilyFor,Store,makeDocument,makeSlide,makeElement,validateDocument,resolveGrounding,stripGrounding,importExternalDocument,GROUNDING_CONTRACT,GROUNDING_CAPABILITY,uid,clone,clamp,color,THEMES,escapeHTML,localPoint,hitElement,elementBounds,unionBounds,rectIntersects,snapMove,textColorRuns,setTextColor} from './core.js';
+import {STYLE_FIELDS,STYLE_DEFAULTS,PRESENTATION_FONTS,resolvePresentationStyle,setPresentationStyle,resetElementTypography,layouts,copySlide,configureLayoutMeasurement,fontFamilyFor,Store,makeDocument,makeSlide,makeElement,validateDocument,resolveGrounding,stripGrounding,importExternalDocument,GROUNDING_CONTRACT,GROUNDING_CAPABILITY,uid,clone,clamp,color,THEMES,escapeHTML,localPoint,hitElement,elementBounds,unionBounds,rectIntersects,snapMove,textColorRuns} from './core.js';
 import {SceneRenderer,ImagePool,paintSlide2D,drawText2D,flattenScene,expandElement,primitivePath,fontCSS,wrapText,wrapTextLines,tableGeometry} from './renderer.js';
 import {createDemo} from './demo.js';
 import {exportPPTX,importPPTX,zipStore} from './pptx.js';
@@ -35,14 +35,13 @@ const stage=$('#stage'),viewport=$('#viewport'),interaction=$('#interaction'),te
 const textColorPreview=document.createElement('canvas');textColorPreview.className='text-color-preview';textColorPreview.setAttribute('aria-hidden','true');textColorPreview.hidden=true;textEditor.before(textColorPreview);
 stage.addEventListener('pointerdown',event=>{if(activeReferenceSlide){event.preventDefault();event.stopImmediatePropagation();}},true);
 stage.addEventListener('dblclick',event=>{if(activeReferenceSlide){event.preventDefault();event.stopImmediatePropagation();}},true);
-const state={tab:'Home',tabsExpanded:false,panel:'format',zoom:'fit',scale:1,showGrid:false,snap:true,showNotes:false,showInspector:false,tool:null,drag:null,space:false,editing:null,clipboard:null,guides:[],marquee:null,drawPreview:null,rendererReason:'',presenting:false};
-state.textColor='@accent';
+const state={tab:'Home',tabsExpanded:false,panel:'format',zoom:'fit',scale:1,showGrid:false,snap:true,showNotes:false,showInspector:false,tool:null,drag:null,space:false,editing:null,clipboard:null,guides:[],marquee:null,drawPreview:null,rendererReason:'',presenting:false,textColor:'@accent'};
 const shapeNames={rect:'Rectangle',roundRect:'Rounded rectangle',ellipse:'Ellipse',triangle:'Triangle',diamond:'Diamond',arrow:'Arrow',star:'Star',line:'Line',text:'Text box'};
 let framePending=0,thumbPending=0,savePending=0,lastPersistedRevision=-1,renderCount=0,storageDB=null,storageAvailable=true;
 const thumbnailsImages=new ImagePool(()=>scheduleThumbnails(true));
 const renderer=new SceneRenderer($('#surface'),(mode,reason)=>{state.rendererReason=reason;$('#rendererStatus').innerHTML=`<i${mode==='Canvas 2D'?' style="background:#b89a5d"':''}></i>${mode}${mode==='WebGPU'?' accelerated':''}`;$('#rendererStatus').title=reason;},invalidate);
 const thumbSignatures=new Map();
-const fonts=['Arial','Segoe UI','Georgia','Verdana','Trebuchet MS','Times New Roman','Courier New'];
+const fonts=PRESENTATION_FONTS;
 const RIBBON_TABS=['Home','Insert','Design','Transitions','Animations','Slide Show','View'];
 function hydrateIcons(root=document){$$('[data-icon]',root).forEach(el=>el.innerHTML=icon(el.dataset.icon));}
 function toast(message,error=false){const el=document.createElement('div');el.className='toast'+(error?' error':'');el.textContent=message;$('#toastRegion').append(el);setTimeout(()=>el.remove(),error?6500:3500);}
@@ -93,7 +92,7 @@ function renderRibbon(){
  if(state.tab==='Home'){
   html+=ribbonGroup('Clipboard',bigButton('Paste','paste','paste')+`<div class="ribbon-stack">${smallButton('Copy','copy','copy')}${smallButton('Duplicate','duplicate','newslide')}</div>`);
   html+=ribbonGroup('Slides',bigButton('New slide','new-slide','newslide')+`<div class="ribbon-stack">${smallButton('Layout','layout-menu','layout')}${smallButton('Delete','delete-slide','trash')}</div>`);
-  html+=ribbonGroup('Font',`<div class="ribbon-stack"><div class="ribbon-row"><select data-prop="fontFamily" class="ribbon-font" aria-label="Font family">${fontOptions(fontFamilyFor(e,store.doc.theme))}</select><input data-prop="fontSize" aria-label="Font size" class="ribbon-size" type="number" min="4" max="600" value="${e.fontSize||40}"></div><div class="ribbon-row">${iconButton('Bold (Ctrl B)','bold','bold',e.bold)}${iconButton('Italic (Ctrl I)','italic','italic',e.italic)}${iconButton('Underline (Ctrl U)','underline','underline',e.underline)}<span class="text-color-control"><button data-cmd="text-color" aria-label="Apply text color" title="Apply last text color"><span style="border-bottom:3px solid ${color(state.textColor,store.doc.theme)}">${icon('fontcolor',17)}</span><span>Color</span></button><button data-cmd="text-color-menu" aria-label="Choose text color" aria-haspopup="dialog" aria-expanded="false" title="Choose text color">▾</button></span>${iconButton('Increase font size','font-grow','plus')}${iconButton('Decrease font size','font-shrink','minus')}</div></div>`,'ribbon-font-group');
+  html+=ribbonGroup('Font',`<div class="ribbon-stack"><div class="ribbon-row"><select data-prop="fontFamily" class="ribbon-font" aria-label="Font family">${fontOptions(fontFamilyFor(e,store.doc.theme,store.doc.style))}</select><input data-prop="fontSize" aria-label="Font size" class="ribbon-size" type="number" min="4" max="600" value="${e.fontSize||40}"></div><div class="ribbon-row">${iconButton('Bold (Ctrl B)','bold','bold',e.bold)}${iconButton('Italic (Ctrl I)','italic','italic',e.italic)}${iconButton('Underline (Ctrl U)','underline','underline',e.underline)}<span class="text-color-control"><button data-cmd="text-color" aria-label="Apply text color" title="Apply last text color"><span style="border-bottom:3px solid ${color(state.textColor,store.doc.theme)}">${icon('fontcolor',17)}</span><span>Color</span></button><button data-cmd="text-color-menu" aria-label="Choose text color" aria-haspopup="dialog" aria-expanded="false" title="Choose text color">▾</button></span>${iconButton('Increase font size','font-grow','plus')}${iconButton('Decrease font size','font-shrink','minus')}</div></div>`,'ribbon-font-group');
   html+=ribbonGroup('Paragraph',`<div class="ribbon-stack"><div class="ribbon-row">${iconButton('Align text left','text-align:left','alignleft',e.align==='left')}${iconButton('Center text','text-align:center','aligncenter',e.align==='center')}${iconButton('Align text right','text-align:right','alignright',e.align==='right')}${iconButton('Toggle bullets','bullets','bullets')}</div><div class="ribbon-row"><select class="ribbon-select" data-prop="valign" aria-label="Vertical text alignment"><option value="top"${e.valign==='top'?' selected':''}>Align top</option><option value="middle"${e.valign==='middle'?' selected':''}>Align middle</option><option value="bottom"${e.valign==='bottom'?' selected':''}>Align bottom</option></select></div></div>`);
   html+=ribbonGroup('Drawing',`<div class="ribbon-mini-shapes">${['rect','ellipse','line','arrow','roundRect','triangle','diamond','star'].map(t=>iconButton(`Draw ${shapeNames[t]}`,'draw:'+t,t,state.tool===t)).join('')}</div>`+bigButton('Text box','insert-text','text',state.tool==='text'?'active':'')+`<div class="ribbon-stack"><label class="ribbon-color" title="Shape fill">${icon('fill',17)}<input type="color" aria-label="Shape fill" data-prop="fill" value="${color(store.selected[0]?.fill||'@accent',store.doc.theme).slice(0,7)==='none'?'#ffffff':color(store.selected[0]?.fill||'@accent',store.doc.theme).slice(0,7)}"></label><label class="ribbon-color" title="Shape outline">${icon('outline',17)}<input type="color" aria-label="Shape outline" data-prop="stroke" value="${color(store.selected[0]?.stroke==='none'?'@ink':store.selected[0]?.stroke||'@ink',store.doc.theme).slice(0,7)}"></label></div>`);
   html+=ribbonGroup('Arrange',bigButton('Arrange','arrange-menu','layers')+bigButton('Select','panel:layers','pointer'),'optional-group');
@@ -108,7 +107,7 @@ function renderRibbon(){
  }
  if(state.tab==='Design'){
   html+=ribbonGroup('Themes',Object.entries(THEMES).map(([key,t])=>`<button class="ribbon-preview ${store.doc.theme===key?'selected':''}" data-cmd="theme:${key}" title="Apply ${t.name} theme" style="background:${t.bg};color:${t.ink}"><span class="preview-big">Aa</span><span class="preview-line"></span><small>${t.name}</small><i style="background:${t.accent}"></i></button>`).join(''));
-  html+=ribbonGroup('Customize',bigButton('Slide size','slide-size','fit')+bigButton('Background','background','fill')+bigButton('Layouts','layout-menu','layout'));
+  html+=ribbonGroup('Customize',bigButton('Presentation style','presentation-style','fontcolor')+bigButton('Slide size','slide-size','fit')+bigButton('Background','background','fill')+bigButton('Layouts','layout-menu','layout'));
  }
  if(state.tab==='Transitions'){
   html+=ribbonGroup('Transition to this slide',['none','fade','push','zoom'].map(t=>`<button class="effect-button ${store.slide.transition===t?'active':''}" data-cmd="transition:${t}">${icon(t==='none'?'slide':t==='zoom'?'zoomin':'transition')}<span>${t[0].toUpperCase()+t.slice(1)}</span></button>`).join(''));
@@ -143,14 +142,16 @@ function renderInspector(){
  }
  if(!e){const t=THEMES[store.doc.theme];
   $('#inspectorContent').innerHTML=`<section class="property-section"><h3>Your theme <span>Made for your story</span></h3><div class="design-preview" style="background:${t.bg};color:${t.ink}"><div class="tag">A FRESH PERSPECTIVE</div><div class="words">Ideas<br>in motion.</div><div class="arch"></div><div class="dot" style="background:${t.accent}"></div></div><div class="theme-caption"><span>${t.name}</span><span class="tag-pill">16:9 · ${store.doc.width} × ${store.doc.height}</span></div><div class="theme-swatches">${Object.entries(THEMES).map(([key,t])=>`<button class="theme-swatch ${key===store.doc.theme?'active':''}" data-cmd="theme:${key}" title="Apply ${t.name} theme" aria-label="Apply ${t.name} theme"><span style="background:${t.bg}"></span><span style="background:${t.accent}"></span><span style="background:${t.dark}"></span></button>`).join('')}</div></section>
+  <section class="property-section"><h3>Presentation style</h3><button class="property-button" data-cmd="presentation-style">Typography and spacing</button></section>
   <section class="property-section"><h3>Background</h3>${colorField('Solid fill','bg',store.slide.bg,true)}${paletteHTML('bg',store.slide.bg)}</section>
   <section class="property-section"><h3>Add a slide <span>Choose a layout</span></h3><div class="layout-grid">${['title','content','split','blank'].map(t=>`<button class="layout-choice" data-cmd="new-layout:${t}"><span class="layout-mini ${t}"></span>${{title:'Title slide',content:'Title & content',split:'Two columns',blank:'Blank canvas'}[t]}</button>`).join('')}</div></section>
   <section class="property-section"><h3>Transition</h3><select data-slide-prop="transition" aria-label="Slide transition" style="width:100%;font-size:11px">${['none','fade','push','zoom'].map(t=>`<option value="${t}"${store.slide.transition===t?' selected':''}>${t[0].toUpperCase()+t.slice(1)}</option>`).join('')}</select><p>Select an object to format it.<br>Double-click text to start writing.</p></section>`;return;
  }
  const fill=e.fill==='none'?'#FFFFFF':e.fill,component=layouts.member(store.slide,e.id);
  let html=`<section class="property-section"><h3>Transform <span>${e.locked?'Locked':e.groupId?'Grouped':'Slide coordinates'}</span></h3><div class="property-grid">${propertyField('X position','x',e.x)}${propertyField('Y position','y',e.y)}${propertyField('Width','w',e.w,'number','min="1"')}${propertyField('Height','h',e.h,'number','min="1"')}${propertyField('Rotation °','rotation',e.rotation)}${propertyField('Opacity 0–1','opacity',e.opacity,'number','min="0" max="1" step="0.05"')}</div><div class="inline-actions" style="margin-top:12px">${smallButton(e.locked?'Unlock':'Lock','lock',e.locked?'unlock':'lock')}${smallButton('Arrange','arrange-menu','layers')}</div></section>`;
- if(component){const diagnostic=layouts.inspect(store.doc).find(item=>item.id===component.id),label=LAYOUT_UI[component.type].name;html=`<section class="property-section"><h3>Adaptive ${label.toLowerCase()}</h3><p>${diagnostic?.overflow?'Content exceeds the reserved area. All text is retained.':'Text edits keep the layout aligned.'}</p><div class="property-grid">${['x','y','w','h'].map(key=>`<label class="property-field">${({x:'X position',y:'Y position',w:'Width',h:'Available height'})[key]}<input type="number" data-layout-frame="${key}" data-layout-id="${escapeHTML(component.id)}" value="${component.frame[key]}"></label>`).join('')}</div><button class="property-button" data-cmd="edit-adaptive:${escapeHTML(component.id)}">${icon('group')}Edit content</button><button class="property-button" data-cmd="detach-layout:${escapeHTML(component.id)}">Detach layout for freeform editing</button></section>`;}
- if(e.type==='text')html+=`<section class="property-section"><h3>Typography</h3><label class="property-field">Theme font<select data-prop="fontRole" aria-label="Theme font role">${['explicit','heading','body'].map(role=>`<option value="${role}"${(e.fontRole||'explicit')===role?' selected':''}>${({explicit:'Custom font',heading:'Theme heading',body:'Theme body'})[role]}</option>`).join('')}</select></label><div class="property-grid"><label class="property-field full">Font family<select data-prop="fontFamily">${fontOptions(fontFamilyFor(e,store.doc.theme))}</select></label>${propertyField('Font size','fontSize',e.fontSize,'number','min="4" max="600"')}${propertyField('Line height','lineHeight',e.lineHeight,'number','min="0.8" max="3" step="0.05"')}</div><div class="inline-actions" style="margin-top:12px">${iconButton('Bold','bold','bold',e.bold)}${iconButton('Italic','italic','italic',e.italic)}${iconButton('Underline','underline','underline',e.underline)}${iconButton('Left','text-align:left','alignleft',e.align==='left')}${iconButton('Center','text-align:center','aligncenter',e.align==='center')}${iconButton('Right','text-align:right','alignright',e.align==='right')}</div><button class="property-button" data-cmd="edit-text">${icon('text')}Edit text</button></section>`;
+ if(component){const diagnostic=layouts.inspect(store.doc).find(item=>item.id===component.id),frame=diagnostic.effective_frame,label=LAYOUT_UI[component.type].name;html=`<section class="property-section"><h3>Adaptive ${label.toLowerCase()}</h3><p>${diagnostic?.overflow?'Content exceeds the reserved area. All text is retained.':'Text edits keep the layout aligned.'}</p><div class="property-grid">${['x','y','w','h'].map(key=>`<label class="property-field">${({x:'X position',y:'Y position',w:'Width',h:'Available height'})[key]}<input type="number" data-layout-frame="${key}" data-layout-id="${escapeHTML(component.id)}" value="${frame[key]}"></label>`).join('')}</div><button class="property-button" data-cmd="automatic-layout:${escapeHTML(component.id)}">Use automatic area</button><button class="property-button" data-cmd="edit-adaptive:${escapeHTML(component.id)}">${icon('group')}Edit content</button><button class="property-button" data-cmd="detach-layout:${escapeHTML(component.id)}">Detach layout for freeform editing</button></section>`;}
+ if(e.type==='text')html+=`<section class="property-section"><h3>Typography</h3>${component?'':`<label class="property-field">Theme font<select data-prop="fontRole" aria-label="Theme font role">${['explicit','heading','body'].map(role=>`<option value="${role}"${(e.fontRole||'explicit')===role?' selected':''}>${({explicit:'Custom font',heading:'Theme heading',body:'Theme body'})[role]}</option>`).join('')}</select></label>`}<div class="property-grid"><label class="property-field full">Font family<select data-prop="fontFamily">${fontOptions(fontFamilyFor(e,store.doc.theme,store.doc.style))}</select></label>${propertyField('Font size','fontSize',e.fontSize,'number','min="4" max="600"')}${propertyField('Line height','lineHeight',e.lineHeight,'number','min="0.8" max="3" step="0.05"')}</div><div class="inline-actions" style="margin-top:12px">${iconButton('Bold','bold','bold',e.bold)}${iconButton('Italic','italic','italic',e.italic)}${iconButton('Underline','underline','underline',e.underline)}${iconButton('Left','text-align:left','alignleft',e.align==='left')}${iconButton('Center','text-align:center','aligncenter',e.align==='center')}${iconButton('Right','text-align:right','alignright',e.align==='right')}</div><button class="property-button" data-cmd="edit-text">${icon('text')}Edit text</button></section>`;
+ if(e.type==='text'&&component)html+='<button class="property-button" data-cmd="reset-typography">Reset to presentation style</button>';
  if(e.type!=='image'&&(!component||e.type==='chart'))html+=`<section class="property-section"><h3>${e.type==='text'?'Text color':'Appearance'}</h3>${colorField(e.type==='text'?'Color':'Fill','fill',fill)}${paletteHTML('fill',e.fill)}${e.type!=='text'?`<div style="margin-top:15px">${colorField('Outline','stroke',e.stroke==='none'?'@ink':e.stroke)}</div><div class="property-grid">${propertyField('Outline width','strokeWidth',e.strokeWidth,'number','min="0" max="100"')}${e.type==='roundRect'?propertyField('Corner radius','radius',e.radius,'number','min="0"'):''}</div><button class="property-button" data-cmd="no-fill">No fill</button>`:''}</section>`;
  if(e.type==='image')html+=`<section class="property-section"><h3>Picture</h3><label class="property-field">Image fit<select data-prop="fit"><option value="cover"${e.fit==='cover'?' selected':''}>Fill (center crop)</option><option value="contain"${e.fit==='contain'?' selected':''}>Fit entire image</option></select></label><button class="property-button" data-cmd="replace-image">${icon('image')}Replace picture</button></section>`;
  if(e.type==='chart')html+=`<section class="property-section"><h3>Chart data</h3><label class="property-field">Chart type<select data-prop="chartType">${['bar','line','donut'].map(t=>`<option value="${t}"${t===e.chartType?' selected':''}>${t[0].toUpperCase()+t.slice(1)}</option>`).join('')}</select></label><button class="property-button" data-cmd="edit-data">${icon('chart')}Edit chart data</button></section>`;
@@ -162,7 +163,7 @@ function buildThumbnails(){
  const slides=displayedDocument().slides,ids=slides.map(s=>s.id).join('|');if($('#thumbnails').dataset.ids!==ids){$('#thumbnails').dataset.ids=ids;$('#thumbnails').innerHTML=slides.map((s,i)=>`<button class="thumb" ${i<store.doc.slides.length?`data-slide="${s.id}" draggable="true"`:`data-reference-slide="${s.id}"`} role="option" aria-label="Slide ${i+1}: ${escapeHTML(s.name)}"><span class="thumb-number">${i+1}</span><span class="thumb-preview"><canvas width="320" height="180"></canvas><span class="thumb-label">${escapeHTML(s.name)}</span></span></button>`).join('');thumbSignatures.clear();}
  $$('.thumb').forEach(t=>{const active=(t.dataset.referenceSlide||t.dataset.slide)===(activeReferenceSlide||store.active);t.classList.toggle('active',active);t.setAttribute('aria-selected',active?'true':'false');});
 }
-function scheduleThumbnails(force=false){if(force)thumbSignatures.clear();if(thumbPending)return;thumbPending=requestAnimationFrame(()=>{thumbPending=0;let painted=0,more=false;const doc=displayedDocument();for(const s of doc.slides){const button=$(`[data-slide="${s.id}"],[data-reference-slide="${s.id}"]`);if(!button)continue;const sig=JSON.stringify([s.bg,s.elements,doc.theme,doc.width,doc.height]);if(thumbSignatures.get(s.id)===sig)continue;if(painted>=4){more=true;break;}const c=$('canvas',button);c.width=320;c.height=Math.round(320*doc.height/doc.width);c.style.aspectRatio=doc.width+'/'+doc.height;paintSlide2D(c,s,doc,thumbnailsImages,{scale:320/doc.width});thumbSignatures.set(s.id,sig);painted++;}if(more)scheduleThumbnails();});}
+function scheduleThumbnails(force=false){if(force)thumbSignatures.clear();if(thumbPending)return;thumbPending=requestAnimationFrame(()=>{thumbPending=0;let painted=0,more=false;const doc=displayedDocument();for(const s of doc.slides){const button=$(`[data-slide="${s.id}"],[data-reference-slide="${s.id}"]`);if(!button)continue;const sig=JSON.stringify([s.bg,s.elements,doc.theme,doc.style,doc.width,doc.height]);if(thumbSignatures.get(s.id)===sig)continue;if(painted>=4){more=true;break;}const c=$('canvas',button);c.width=320;c.height=Math.round(320*doc.height/doc.width);c.style.aspectRatio=doc.width+'/'+doc.height;paintSlide2D(c,s,doc,thumbnailsImages,{scale:320/doc.width});thumbSignatures.set(s.id,sig);painted++;}if(more)scheduleThumbnails();});}
 function syncUI(kind='change'){
  $('#ribbon').inert=!!activeReferenceSlide;$('#inspector').inert=!!activeReferenceSlide;$('#notes').disabled=!!activeReferenceSlide;
  if(document.activeElement!==$('#documentTitle'))$('#documentTitle').value=store.doc.title;
@@ -175,7 +176,7 @@ function syncUI(kind='change'){
  if(!['live'].includes(kind)){renderRibbon();if(!$('#inspectorContent').contains(document.activeElement))renderInspector();}
  invalidate();
 }
-store.onChange(kind=>{if(kind==='commit'||kind==='restore')setReferencePresentation(null);else if(kind==='active')activeReferenceSlide=null;syncUI(kind);if(kind==='commit'||kind==='restore'){schedulePersist();resizeStage();const sources=new Set(store.doc.slides.flatMap(s=>s.elements.filter(e=>e.type==='image').map(e=>e.src)));renderer.images.retain(sources);thumbnailsImages.retain(sources);}});
+store.onChange(kind=>{if(kind==='load'){clearTimeout(savePending);lastPersistedRevision=store.revision;}if(['commit','restore','load'].includes(kind))setReferencePresentation(null);else if(kind==='active')activeReferenceSlide=null;syncUI(kind);if(['commit','restore','load'].includes(kind)){if(kind!=='load')schedulePersist();resizeStage();const sources=new Set(store.doc.slides.flatMap(s=>s.elements.filter(e=>e.type==='image').map(e=>e.src)));renderer.images.retain(sources);thumbnailsImages.retain(sources);}});
 async function openStorage(){
  if(publicationViewer)return null;
  try{storageDB=await new Promise((resolve,reject)=>{const req=indexedDB.open('aurelia-slides-v1',1);req.onupgradeneeded=()=>req.result.createObjectStore('documents');req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);req.onblocked=()=>reject(new Error('Local storage is blocked by another tab.'));});return await new Promise((resolve,reject)=>{const tx=storageDB.transaction('documents','readonly'),r=tx.objectStore('documents').get('current');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
@@ -215,19 +216,35 @@ function drawingGeometry(type,start,end=start,square=false){
  else if(square){h=w;y=end.y<start.y?start.y-h:start.y;}
  return{x,y,w:Math.max(8,w),h:Math.max(type==='line'?1:8,h),rotation};
 }
+function editPresentationStyle(){
+ const defaults=resolvePresentationStyle({...store.doc,style:{}}),overrides=store.doc.style||{};
+ const field=spec=>{
+  const value=overrides[spec.key],label=escapeHTML(spec.label),key=escapeHTML(spec.key);
+  const control=spec.type==='font'
+   ?`<select data-style-field="${key}" aria-label="${label}"><option value="">Theme default (${escapeHTML(defaults[spec.key])})</option>${fonts.map(font=>`<option value="${escapeHTML(font)}"${font===value?' selected':''}>${escapeHTML(font)}</option>`).join('')}</select>`
+   :`<input type="number" data-style-field="${key}" aria-label="${label}" min="${spec.min}" max="${spec.max}" step="${spec.step||1}" placeholder="${defaults[spec.key]}" value="${value??''}">`;
+  return `<label class="property-field">${label}${control}</label>`;
+ };
+ const sections=['typography','spacing'].map(group=>`<section class="property-section"><h3>${group==='typography'?'Typography':'Spacing'}</h3><div class="property-grid">${STYLE_FIELDS.filter(spec=>spec.group===group).map(field).join('')}</div></section>`).join('');
+ openModal('Presentation style',`<p class="modal-description">Leave a field empty to use its default. Text with custom formatting keeps its overrides.</p>${sections}`,[
+  {label:'Cancel',action:()=>{}},
+  {label:'Reset presentation style',action:()=>{store.setPresentationStyle({}, {reset:true});renderInspector();}},
+  {label:'Apply style',primary:true,action:()=>{const patch=Object.fromEntries(STYLE_FIELDS.map(spec=>{const value=$(`[data-style-field="${spec.key}"]`,modal).value;return[spec.key,value===''?null:spec.type==='font'?value:Number(value)];}));store.setPresentationStyle(patch);renderInspector();}}
+ ],640);
+}
 function startTextEditing(e){
  if(!e||e.type!=='text'||e.locked)return;try{layouts.assertProperties(store.slide,[e.id],{text:e.text});}catch(error){toast(error.message,true);return;}finishTextEditing();clearTool();store.select([e.id]);store.begin('Edit text');state.editing={id:e.id,original:e.text};textEditor.value=e.text;textEditor.hidden=false;syncTextEditorPosition();textEditor.focus();textEditor.select();syncUI('selection');
 }
 function syncTextEditorPosition(){
  if(!state.editing)return;const e=store.slide.elements.find(e=>e.id===state.editing.id);if(!e)return;const sc=state.scale;
- Object.assign(textEditor.style,{left:e.x*sc+'px',top:e.y*sc+'px',width:e.w*sc+'px',height:e.h*sc+'px',fontFamily:`"${fontFamilyFor(e,store.doc.theme)}", sans-serif`,fontSize:e.fontSize*sc+'px',fontWeight:e.bold?'700':'400',fontStyle:e.italic?'italic':'normal',textDecoration:e.underline?'underline':'none',lineHeight:e.lineHeight||1.2,color:color(e.fill,store.doc.theme),textAlign:e.align||'left',padding:(e.padding||0)*sc+'px',transform:`rotate(${e.rotation||0}deg)`});
+ Object.assign(textEditor.style,{left:e.x*sc+'px',top:e.y*sc+'px',width:e.w*sc+'px',height:e.h*sc+'px',fontFamily:`"${fontFamilyFor(e,store.doc.theme,store.doc.style)}", sans-serif`,fontSize:e.fontSize*sc+'px',fontWeight:e.bold?'700':'400',fontStyle:e.italic?'italic':'normal',textDecoration:e.underline?'underline':'none',lineHeight:e.lineHeight||1.2,color:color(e.fill,store.doc.theme),textAlign:e.align||'left',padding:(e.padding||0)*sc+'px',transform:`rotate(${e.rotation||0}deg)`});
  textEditor.style.caretColor=color(e.fill,store.doc.theme);if(e.textColors?.length)textEditor.style.color='transparent';
- if(e.valign==='middle'||e.valign==='bottom'){const c=document.createElement('canvas'),ctx=c.getContext('2d');ctx.font=fontCSS(e,store.doc.theme);const lines=wrapText(ctx,e.text,e.w-2*(e.padding||0)),h=lines.length*e.fontSize*(e.lineHeight||1.2),p=e.valign==='middle'?Math.max(e.padding||0,(e.h-h)/2):Math.max(e.padding||0,e.h-h-(e.padding||0));textEditor.style.paddingTop=p*sc+'px';}
+ if(e.valign==='middle'||e.valign==='bottom'){const c=document.createElement('canvas'),ctx=c.getContext('2d');ctx.font=fontCSS(e,store.doc.theme,store.doc.style);const lines=wrapText(ctx,e.text,e.w-2*(e.padding||0)),h=lines.length*e.fontSize*(e.lineHeight||1.2),p=e.valign==='middle'?Math.max(e.padding||0,(e.h-h)/2):Math.max(e.padding||0,e.h-h-(e.padding||0));textEditor.style.paddingTop=p*sc+'px';}
  textColorPreview.hidden=!e.textColors?.length;
  if(!textColorPreview.hidden){
   const resolution=Math.min(sc*(window.devicePixelRatio||1),4096/Math.max(e.w,e.h));textColorPreview.width=Math.ceil(e.w*resolution);textColorPreview.height=Math.ceil(e.h*resolution);
   Object.assign(textColorPreview.style,{left:textEditor.style.left,top:textEditor.style.top,width:textEditor.style.width,height:textEditor.style.height,transform:textEditor.style.transform});
-  const ctx=textColorPreview.getContext('2d');ctx.scale(resolution,resolution);ctx.translate(-textEditor.scrollLeft/sc,-textEditor.scrollTop/sc);drawText2D(ctx,e,store.doc.theme,textEditor.scrollTop/sc);
+  const ctx=textColorPreview.getContext('2d');ctx.scale(resolution,resolution);ctx.translate(-textEditor.scrollLeft/sc,-textEditor.scrollTop/sc);drawText2D(ctx,e,store.doc.theme,textEditor.scrollTop/sc,store.doc.style);
  }
 }
 function finishTextEditing(cancel=false){
@@ -235,7 +252,18 @@ function finishTextEditing(cancel=false){
  if(cancel)store.cancel();else{const e=store.slide.elements.find(e=>e.id===id);if(e)store.setElementContent(e,{text:textEditor.value});store.commit();}
  viewport.focus({preventScroll:true});syncUI('selection');scheduleThumbnails();
 }
-textEditor.addEventListener('beforeinput',event=>{state.textEdit={start:textEditor.selectionStart,end:textEditor.selectionEnd,type:event.inputType};});
+function changeHistory(action){
+ const selection=state.editing?{id:state.editing.id,start:textEditor.selectionStart,end:textEditor.selectionEnd,direction:textEditor.selectionDirection}:null;
+ if(selection)finishTextEditing();
+ store[action]();
+ const element=selection&&store.slide.elements.find(element=>element.id===selection.id);
+ if(element&&!element.locked){startTextEditing(element);textEditor.setSelectionRange(selection.start,selection.end,selection.direction);}
+ renderInspector();
+}
+textEditor.addEventListener('beforeinput',event=>{
+ if(event.inputType==='historyUndo'||event.inputType==='historyRedo'){event.preventDefault();changeHistory(event.inputType==='historyUndo'?'undo':'redo');return;}
+ state.textEdit={start:textEditor.selectionStart,end:textEditor.selectionEnd,type:event.inputType};
+});
 textEditor.addEventListener('input',()=>{
  if(referenceDocument)setReferencePresentation(null);const e=store.slide.elements.find(e=>e.id===state.editing?.id),edit=state.textEdit;state.textEdit=null;
  if(e){
@@ -246,7 +274,13 @@ textEditor.addEventListener('input',()=>{
 });
 textEditor.addEventListener('scroll',invalidate);
 textEditor.addEventListener('pointerdown',event=>event.stopPropagation());
-textEditor.addEventListener('keydown',event=>{event.stopPropagation();if(event.key==='Escape'){event.preventDefault();if(menu.dataset.textColor)closeMenu();else finishTextEditing(true);}if((event.metaKey||event.ctrlKey)&&event.key==='Enter'){event.preventDefault();finishTextEditing();}});
+textEditor.addEventListener('keydown',safeRun(event=>{
+ event.stopPropagation();if(event.isComposing)return;
+ const ctrl=event.metaKey||event.ctrlKey,key=event.key.toLowerCase();
+ if(ctrl&&(key==='z'||key==='y')){event.preventDefault();changeHistory(key==='y'||event.shiftKey?'redo':'undo');return;}
+ if(event.key==='Escape'){event.preventDefault();if(menu.dataset.textColor)closeMenu();else finishTextEditing(true);}
+ if(ctrl&&event.key==='Enter'){event.preventDefault();finishTextEditing();}
+}));
 textEditor.addEventListener('blur',()=>{if(state.editing)setTimeout(()=>{if(state.editing&&document.activeElement!==textEditor&&!(menu.dataset.textColor&&menu.contains(document.activeElement))&&!document.activeElement?.closest('[data-cmd="text-color"],[data-cmd="text-color-menu"]'))finishTextEditing();},0);});
 stage.addEventListener('pointerdown',event=>{
  if(event.button!==0&&event.button!==1)return;
@@ -324,33 +358,32 @@ function showTextColorMenu(anchor){
  const range=state.editing&&textEditor.selectionEnd>textEditor.selectionStart;
  const colors=[['@ink','Text'],['@accent','Accent'],['@secondary','Secondary'],['@muted','Muted'],['@bg','Background'],['#FFFFFF','White'],['#000000','Black'],['#DC2626','Red'],['#EA580C','Orange'],['#CA8A04','Gold'],['#16A34A','Green'],['#2563EB','Blue'],['#9333EA','Purple']];
  showMenu(`<div role="dialog" aria-label="Text color palette"><div class="menu-title">Text color</div><p class="color-scope">Applies to: <strong>${range?'Selected text':selectedText().length===1?'Entire text box':`${selectedText().length} text boxes`}</strong></p><div class="text-color-palette">${colors.map(([value,label])=>`<button data-text-color-value="${value}" title="${label}" aria-label="${label}" style="background:${color(value,store.doc.theme)}"></button>`).join('')}</div><label class="custom-text-color">Custom color <input type="color" aria-label="Custom text color" data-text-color-custom value="${color(state.textColor,store.doc.theme).slice(0,7)}"></label></div>`,anchor);
- menu.dataset.textColor='true';anchor?.setAttribute('aria-expanded','true');
+ menu.dataset.textColor='true';anchor?.setAttribute('aria-expanded','true');menu.querySelector('button')?.focus({preventScroll:true});
 }
 function applyTextColor(fill){
  const elements=selectedText();if(!elements.length){toast('Select a text box to change its color.');return;}
  const editing=state.editing&&elements.find(element=>element.id===state.editing.id),start=textEditor.selectionStart,end=textEditor.selectionEnd,direction=textEditor.selectionDirection;
  const ranged=editing&&end>start;
- layouts.assertProperties(store.slide,elements.map(element=>element.id),ranged?{textColors:[]}:{fill});
  if(state.editing)store.commit();
- store.transaction(ranged?'Color selected text':'Color text box',()=>{for(const element of elements){if(ranged)setTextColor(element,fill,start,end);else{element.fill=fill;delete element.textColors;}}});
+ store.colorText(elements.map(element=>element.id),fill,ranged?{start,end}:null);
  state.textColor=fill;closeMenu();renderRibbon();
  if(editing){store.begin('Edit text');textEditor.focus({preventScroll:true});textEditor.setSelectionRange(start,end,direction);syncTextEditorPosition();}
  invalidate();
 }
-function formatText(props,label='Format text'){if(!selectedText().length){toast('Select a text box to change its formatting.');return;}layouts.assertProperties(store.slide,selectedText().map(element=>element.id),props);store.transaction(label,()=>selectedText().forEach(e=>{Object.assign(e,props);if('fontFamily'in props&&!('fontRole'in props))delete e.fontRole;}));}
+function formatText(props,label='Format text'){if(!selectedText().length){toast('Select a text box to change its formatting.');return;}layouts.assertProperties(store.slide,selectedText().map(element=>element.id),props);store.transaction(label,()=>selectedText().forEach(e=>{store.setElementContent(e,props);}));}
 function updateProperty(name,value){
  if(!store.selected.length){toast('Select an object first.');renderRibbon();return;}
  const numbers={x:[-100000,100000],y:[-100000,100000],w:[1,16384],h:[1,16384],rotation:[-36000,36000],opacity:[0,1],fontSize:[4,600],lineHeight:[.8,3],strokeWidth:[0,100],radius:[0,2000]};
  layouts.assertProperties(store.slide,store.selected.map(element=>element.id),{[name]:value});
  if(name in numbers){value=Number(value);if(!Number.isFinite(value))return;value=clamp(value,...numbers[name]);}
- if(name==='fontRole'){if(!selectedText().length)return;store.transaction('Change theme font',()=>selectedText().forEach(element=>{if(value==='explicit')delete element.fontRole;else element.fontRole=value;}));return;}
- if(['fontFamily','bold','italic','underline','align','valign','lineHeight'].includes(name)){formatText({[name]:value});return;}
- store.transaction('Change '+name,()=>{for(const e of store.selected)if(!e.locked){e[name]=value;if(name==='fill'&&e.type==='text')delete e.textColors;if(name==='stroke'&&e.strokeWidth===0)e.strokeWidth=2;}});
+ if(name==='fontRole'){if(!selectedText().length)return;store.transaction('Change theme font',()=>selectedText().forEach(element=>{store.setElementContent(element,{fontRole:value==='explicit'?null:value});}));return;}
+ if(['fontFamily','fontSize','bold','italic','underline','align','valign','lineHeight'].includes(name)){formatText({[name]:value});return;}
+ store.transaction('Change '+name,()=>{for(const e of store.selected)if(!e.locked){store.setElementContent(e,{[name]:value});if(name==='stroke'&&e.strokeWidth===0)e.strokeWidth=2;}});
 }
 document.addEventListener('change',safeRun(event=>{
  const el=event.target;
  if(el.matches('[data-text-color-custom]')){applyTextColor(el.value);return;}
- if(el.matches('[data-layout-frame]')){const component=layouts.inspect(store.doc).find(item=>item.id===el.dataset.layoutId);store.transaction('Resize adaptive layout',()=>layouts.update(store.doc,component.id,{frame:{...component.frame,[el.dataset.layoutFrame]:Number(el.value)}}));renderInspector();return;}
+ if(el.matches('[data-layout-frame]')){const component=layouts.inspect(store.doc).find(item=>item.id===el.dataset.layoutId);store.transaction('Resize adaptive layout',()=>layouts.update(store.doc,component.id,{frame:{...component.effective_frame,[el.dataset.layoutFrame]:Number(el.value)}}));renderInspector();return;}
  if(el.matches('[data-prop]'))updateProperty(el.dataset.prop,el.type==='checkbox'?el.checked:el.value);
  if(el.matches('[data-slide-prop]')){const key=el.dataset.slideProp,value=key==='duration'?clamp(+el.value||.45,.1,5):el.value;store.transaction('Change slide '+key,()=>store.slide[key]=value);}
 }));
@@ -367,7 +400,11 @@ document.addEventListener('pointerdown',event=>{
  if(event.target.closest('[data-text-color-value],[data-cmd="text-color"],[data-cmd="text-color-menu"]'))event.preventDefault();
  if(!menu.hidden&&!menu.contains(event.target)&&!event.target.closest('[data-cmd]')){const colorMenu=menu.dataset.textColor;closeMenu();if(colorMenu&&state.editing&&event.target!==textEditor)finishTextEditing();}
 });
-menu.addEventListener('keydown',event=>{if(menu.dataset.textColor&&event.key==='Escape'){event.preventDefault();event.stopPropagation();closeMenu();if(state.editing)textEditor.focus({preventScroll:true});else $('[data-cmd="text-color-menu"]')?.focus();}});
+menu.addEventListener('keydown',event=>{
+ if(!menu.dataset.textColor)return;
+ event.stopPropagation();
+ if(event.key==='Escape'){event.preventDefault();closeMenu();if(state.editing)textEditor.focus({preventScroll:true});else $('[data-cmd="text-color-menu"]')?.focus();}
+});
 document.addEventListener('click',safeRun(async event=>{
  const textColor=event.target.closest('[data-text-color-value]');if(textColor){applyTextColor(textColor.dataset.textColorValue);return;}
  const colorButton=event.target.closest('[data-color-prop]');if(colorButton){const key=colorButton.dataset.colorProp,val=colorButton.dataset.value;if(key==='bg')store.transaction('Background color',()=>store.slide.bg=val);else updateProperty(key,val);return;}
@@ -462,8 +499,8 @@ async function exportSVG(){
  for(const e of flattenScene(s.elements)){
   const clip='clip'+idx++,transform=`translate(${e.x+e.w/2} ${e.y+e.h/2}) rotate(${e.rotation||0}) translate(${-e.w/2} ${-e.h/2})`,style=`fill="${color(e.fill,doc.theme)}" stroke="${e.strokeWidth?color(e.stroke,doc.theme):'none'}" stroke-width="${e.strokeWidth||0}"`;let body='';
   if(e.type==='text'){
-   ctx.font=fontCSS(e,doc.theme);const lines=wrapTextLines(ctx,e.text,e.w-2*(e.padding||0)),lh=e.fontSize*(e.lineHeight||1.2),total=lines.length*lh,p=e.padding||0,x=e.align==='center'?e.w/2:e.align==='right'?e.w-p:p,top=e.valign==='middle'?Math.max(p,(e.h-total)/2):e.valign==='bottom'?Math.max(p,e.h-total-p):p;
-   body=`<text fill="${color(e.fill,doc.theme)}" font-family="${escapeHTML(fontFamilyFor(e,doc.theme))}" font-size="${e.fontSize}" font-weight="${e.bold?'700':'400'}" font-style="${e.italic?'italic':'normal'}" text-decoration="${e.underline?'underline':'none'}" text-anchor="${e.align==='center'?'middle':e.align==='right'?'end':'start'}">${lines.map((line,i)=>`<tspan x="${x}" y="${top+i*lh+e.fontSize*.85}" xml:space="preserve">${textColorRuns(e,line.start,line.start+line.text.length).map(run=>`<tspan fill="${color(run.fill,doc.theme)}">${escapeHTML(run.text)}</tspan>`).join('')}</tspan>`).join('')}</text>`;
+   ctx.font=fontCSS(e,doc.theme,doc.style);const lines=wrapTextLines(ctx,e.text,e.w-2*(e.padding||0)),lh=e.fontSize*(e.lineHeight||1.2),total=lines.length*lh,p=e.padding||0,x=e.align==='center'?e.w/2:e.align==='right'?e.w-p:p,top=e.valign==='middle'?Math.max(p,(e.h-total)/2):e.valign==='bottom'?Math.max(p,e.h-total-p):p;
+   body=`<text fill="${color(e.fill,doc.theme)}" font-family="${escapeHTML(fontFamilyFor(e,doc.theme,doc.style))}" font-size="${e.fontSize}" font-weight="${e.bold?'700':'400'}" font-style="${e.italic?'italic':'normal'}" text-decoration="${e.underline?'underline':'none'}" text-anchor="${e.align==='center'?'middle':e.align==='right'?'end':'start'}">${lines.map((line,i)=>`<tspan x="${x}" y="${top+i*lh+e.fontSize*.85}" xml:space="preserve">${textColorRuns(e,line.start,line.start+line.text.length).map(run=>`<tspan fill="${color(run.fill,doc.theme)}">${escapeHTML(run.text)}</tspan>`).join('')}</tspan>`).join('')}</text>`;
   }else if(e.type==='image')body=`<image href="${e.src}" width="${e.w}" height="${e.h}" preserveAspectRatio="xMidYMid ${e.fit==='contain'?'meet':'slice'}"/>`;
   else if(e.type==='chart'){const c=document.createElement('canvas');c.width=Math.ceil(e.w*2);c.height=Math.ceil(e.h*2);paintSlide2D(c,{bg:s.bg,elements:[{...e,x:0,y:0,rotation:0,opacity:1}]},{...doc,width:e.w,height:e.h},renderer.images,{scale:2});body=`<image href="${c.toDataURL('image/png')}" width="${e.w}" height="${e.h}"/>`;}
   else if(e.type==='ellipse')body=`<ellipse cx="${e.w/2}" cy="${e.h/2}" rx="${e.w/2}" ry="${e.h/2}" ${style}/>`;
@@ -481,10 +518,11 @@ async function command(cmd,anchor){
  if(['save','export-pptx','export-png','export-svg','export-images','print'].includes(cmd)&&nativeExportBlocked())return;
  if(activeReferenceSlide&&!['export-pptx','export-png','export-svg','export-images','print','save','present','present-first','present-notes','present-rehearse','normal','zoom-fit','zoom-100','zoom-in','zoom-out','sorter','diagnostics'].includes(cmd)&&!cmd.startsWith('tab:'))
   throw new Error('References are read-only. Select an authored slide to edit.');
- if(state.editing&&!['copy','paste','text-color','text-color-menu'].includes(cmd))finishTextEditing();
+ if(state.editing&&!['copy','paste','text-color','text-color-menu','undo','redo'].includes(cmd))finishTextEditing();
  if(cmd.startsWith('tab:')){state.tab=cmd.slice(4);renderRibbon();return;}
  if(cmd.startsWith('insert-layout:')){editAdaptiveLayout(null,cmd.slice(14));return;}
  if(cmd.startsWith('edit-adaptive:')){editAdaptiveLayout(cmd.slice(14));return;}
+ if(cmd.startsWith('automatic-layout:')){store.transaction('Use automatic layout area',()=>layouts.update(store.doc,cmd.slice(17),{frame:null}));renderInspector();return;}
  if(cmd.startsWith('detach-layout:')){store.transaction('Detach adaptive layout',()=>layouts.detach(store.doc,cmd.slice(14)));renderInspector();return;}
  if(cmd.startsWith('panel:')){state.panel=cmd.slice(6);state.showInspector=true;renderInspector();resizeStage();return;}
  if(cmd.startsWith('draw:')){setTool(cmd.slice(5));return;}
@@ -498,6 +536,8 @@ async function command(cmd,anchor){
  switch(cmd){
   case'text-color-menu':showTextColorMenu(anchor);break;
   case'text-color':applyTextColor(state.textColor);break;
+  case'presentation-style':editPresentationStyle();break;
+  case'reset-typography':store.resetSelectedTypography();renderInspector();break;
   case'file':showFileMenu(anchor);break;
   case'more-tabs':state.tabsExpanded=!state.tabsExpanded;anchor.setAttribute('aria-expanded',String(state.tabsExpanded));anchor.setAttribute('aria-label',state.tabsExpanded?'Hide extra tabs':'Show more tabs');renderRibbon();break;
   case'export-menu':showExportMenu(anchor);break;
@@ -505,8 +545,7 @@ async function command(cmd,anchor){
   case'restore-demo':askReplace('Restore the example deck?',()=>store.replace(createDemo()));break;
   case'open':$('#openFile').click();break;
   case'save':nativeSave();break;
-  case'undo':store.undo();renderInspector();break;
-  case'redo':store.redo();renderInspector();break;
+  case'undo':case'redo':changeHistory(cmd);break;
   case'copy':await copySelection();break;
   case'paste':await pasteSelection();break;
   case'duplicate':store.duplicateSelected();break;
@@ -534,7 +573,7 @@ async function command(cmd,anchor){
   case'ungroup':store.ungroup();break;
   case'lock':{const lock=!store.selected.every(e=>e.locked);store.transaction(lock?'Lock objects':'Unlock objects',()=>store.selected.forEach(e=>e.locked=lock));renderInspector();break;}
   case'bold':case'italic':case'underline':formatText({[cmd]:!selectedText().every(e=>e[cmd])});break;
-  case'font-grow':case'font-shrink':if(selectedText().length)store.transaction('Change font size',()=>selectedText().forEach(e=>e.fontSize=clamp(e.fontSize+(cmd==='font-grow'?2:-2),4,600)));break;
+  case'font-grow':case'font-shrink':if(selectedText().length)store.transaction('Change font size',()=>selectedText().forEach(e=>store.setElementContent(e,{fontSize:clamp(e.fontSize+(cmd==='font-grow'?2:-2),4,600)})));break;
   case'bullets':if(selectedText().length){const remove=selectedText().every(e=>e.text.split('\n').every(l=>!l.trim()||l.startsWith('• ')));store.transaction('Toggle bullets',()=>selectedText().forEach(e=>e.text=e.text.split('\n').map(l=>!l.trim()?l:remove?l.replace(/^• /,''):l.startsWith('• ')?l:'• '+l).join('\n')));}break;
   case'no-fill':store.updateSelected({fill:'none'},'Remove fill');break;
   case'background':state.panel='format';state.showInspector=true;store.select([]);renderInspector();resizeStage();setTimeout(()=>$('[data-slide-prop="bg"]',$('#inspector'))?.click(),0);break;
@@ -656,7 +695,7 @@ async function initialize(){
  const saved=await openStorage();if(saved){try{store.doc=validateDocument(saved);layouts.normalize(store.doc);store.active=store.doc.slides[0].id;$('#saveText').textContent='Restored from this device';}catch(error){toast('The saved recovery copy could not be read. The example deck is open.',true);}}
  syncUI();renderInspector();resizeStage();await renderer.init();resizeStage();scheduleThumbnails(true);
  new ResizeObserver(()=>resizeStage()).observe(viewport);
- window.Aurelia={version:'1.0.0',groundingContract:GROUNDING_CONTRACT,capabilities:[GROUNDING_CAPABILITY],store,state,renderer,command,THEMES,makeSlide,layouts,copySlide,layout:{fontCSS,wrapText,flattenScene,elementBounds,color,tableGeometry,fontFamilyFor},validateDocument,resolveGrounding,makeElement,exportPPTX,exportReferencePPTX,setReferencePresentation,get referenceRevision(){return referencePresentation?.id_revision??null;},get referenceActive(){return activeReferenceSlide!==null;},importPPTX,createDemo,startTextEditing,finishTextEditing,resizeStage,renderSlideImages,renderCount:()=>renderCount,ready:true};
+ window.Aurelia={version:'1.0.0',groundingContract:GROUNDING_CONTRACT,capabilities:[GROUNDING_CAPABILITY],store,state,renderer,command,THEMES,STYLE_FIELDS,STYLE_DEFAULTS,PRESENTATION_FONTS,resolvePresentationStyle,setPresentationStyle,resetElementTypography,makeSlide,layouts,copySlide,layout:{fontCSS,wrapText,flattenScene,elementBounds,color,tableGeometry,fontFamilyFor},validateDocument,resolveGrounding,makeElement,exportPPTX,exportReferencePPTX,setReferencePresentation,get referenceRevision(){return referencePresentation?.id_revision??null;},get referenceActive(){return activeReferenceSlide!==null;},importPPTX,createDemo,startTextEditing,finishTextEditing,resizeStage,renderSlideImages,renderCount:()=>renderCount,ready:true};
  if(!saved)await persist();lastPersistedRevision=store.revision;
 }
 initialize().catch(error=>{console.error(error);toast('Initialization failed: '+error.message,true);$('#rendererStatus').textContent='Initialization error';});
