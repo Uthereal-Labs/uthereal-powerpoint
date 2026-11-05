@@ -1,4 +1,4 @@
-import {fontFamilyFor,color,clamp} from './core.js';
+import {fontFamilyFor,color,clamp,textColorRuns} from './core.js';
 /** Ordered retained-scene renderer: analytic GPU shapes + cached, shaped text/image tiles. */
 export const SHAPE_IDS={rect:0,roundRect:1,ellipse:2,triangle:3,diamond:4,arrow:5,star:6,line:7};
 export const GPU_SHADER=`
@@ -41,24 +41,39 @@ fn distance(p:vec2f,h:vec2f,kind:u32,r:f32)->f32 {
 export function rgba(value,theme){const c=color(value,theme);if(c==='none')return[0,0,0,0];const h=c.slice(1);return[parseInt(h.slice(0,2),16)/255,parseInt(h.slice(2,4),16)/255,parseInt(h.slice(4,6),16)/255,h.length===8?parseInt(h.slice(6,8),16)/255:1];}
 export function fontCSS(e,theme='studio'){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${fontFamilyFor(e,theme)}", sans-serif`;}
 export function wrapText(ctx,text,maxWidth){
+  return wrapTextLines(ctx,text,maxWidth).map(line=>line.text);
+}
+/** Wrapping plus source offsets, shared by canvas painting and SVG export. */
+export function wrapTextLines(ctx,text,maxWidth){
   const lines=[];maxWidth=Math.max(1,maxWidth);
-  for(const para of String(text).replace(/\r\n?/g,'\n').split('\n')){
-    if(!para){lines.push('');continue;}let line='';
-    for(const token of para.match(/\S+\s*|\s+/gu)||[]){
-      if(ctx.measureText(line+token.trimEnd()).width<=maxWidth){line+=token;continue;}
-      if(line.trim()){lines.push(line.trimEnd());line='';}
-      if(ctx.measureText(token.trimEnd()).width<=maxWidth){line=token.trimStart();continue;}
+  const paragraphs=String(text).split(/(\r\n?|\n)/);let offset=0;
+  for(let paragraph=0;paragraph<paragraphs.length;paragraph+=2){
+    const para=paragraphs[paragraph];let line='',start=offset;
+    for(const match of para.matchAll(/\S+\s*|\s+/gu)){
+      const token=match[0],tokenStart=offset+match.index;
+      if(ctx.measureText(line+token.trimEnd()).width<=maxWidth){if(!line)start=tokenStart;line+=token;continue;}
+      if(line.trim()){lines.push({text:line.trimEnd(),start});line='';}
+      if(ctx.measureText(token.trimEnd()).width<=maxWidth){line=token.trimStart();start=tokenStart+token.length-line.length;continue;}
       const chars=globalThis.Intl?.Segmenter?[...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(token)].map(x=>x.segment):Array.from(token);
-      for(const ch of chars){if(line&&ctx.measureText(line+ch).width>maxWidth){lines.push(line);line='';}line+=ch;}
-    }lines.push(line.trimEnd());
+      let consumed=0;
+      for(const ch of chars){if(line&&ctx.measureText(line+ch).width>maxWidth){lines.push({text:line,start});line='';}if(!line)start=tokenStart+consumed;line+=ch;consumed+=ch.length;}
+    }lines.push({text:line.trimEnd(),start});offset+=para.length+(paragraphs[paragraph+1]?.length||0);
   }return lines;
 }
-export function drawText2D(ctx,e,theme){
+export function drawText2D(ctx,e,theme,scrollTop=0){
   ctx.font=fontCSS(e,theme);ctx.textBaseline='alphabetic';ctx.fillStyle=color(e.fill,theme);ctx.textAlign=e.align||'left';
-  const pad=e.padding??4,fs=e.fontSize||24,lh=fs*(e.lineHeight||1.2),lines=wrapText(ctx,e.text,e.w-2*pad),height=lines.length*lh;
+  const pad=e.padding??4,fs=e.fontSize||24,lh=fs*(e.lineHeight||1.2),lines=wrapTextLines(ctx,e.text,e.w-2*pad),height=lines.length*lh;
   let top=pad;if(e.valign==='middle')top=Math.max(pad,(e.h-height)/2);if(e.valign==='bottom')top=Math.max(pad,e.h-height-pad);
   const x=e.align==='center'?e.w/2:e.align==='right'?e.w-pad:pad;
-  for(let i=0;i<lines.length;i++){const y=top+i*lh+fs*.85;if(y-fs>e.h)break;ctx.fillText(lines[i],x,y);if(e.underline){const w=ctx.measureText(lines[i]).width,xx=x-(e.align==='center'?w/2:e.align==='right'?w:0);ctx.fillRect(xx,y+fs*.12,w,Math.max(1,fs/20));}}
+  for(let i=0;i<lines.length;i++){
+    const y=top+i*lh+fs*.85;if(y-fs>e.h+scrollTop)break;if(y+lh<scrollTop)continue;
+    const line=lines[i],width=ctx.measureText(line.text).width,left=x-(e.align==='center'?width/2:e.align==='right'?width:0);
+    ctx.textAlign='left';let prefix='';
+    for(const run of textColorRuns(e,line.start,line.start+line.text.length)){
+      const dx=ctx.measureText(prefix).width;ctx.fillStyle=color(run.fill,theme);ctx.fillText(run.text,left+dx,y);prefix+=run.text;
+      if(e.underline)ctx.fillRect(left+dx,y+fs*.12,ctx.measureText(prefix).width-dx,Math.max(1,fs/20));
+    }
+  }
 }
 export function primitivePath(ctx,e){
   const w=e.w,h=e.h;ctx.beginPath();
@@ -137,7 +152,7 @@ export function paintSlide2D(canvas,slide,doc,images,{scale=1,ignoreId=null}={})
 }
 function tileSignature(e,theme,resolution){
   if(e.type==='image')return `${e.id}|${e.w}|${e.h}|${e.fit}|${e.src.length}|${resolution}`;
-  return JSON.stringify([e.type,e.text,e.w,e.h,e.fill,e.fontSize,e.fontFamily,e.fontRole,e.bold,e.italic,e.underline,e.align,e.valign,e.lineHeight,e.padding,e.chartType,e.labels,e.values,theme,resolution]);
+  return JSON.stringify([e.type,e.text,e.textColors,e.w,e.h,e.fill,e.fontSize,e.fontFamily,e.fontRole,e.bold,e.italic,e.underline,e.align,e.valign,e.lineHeight,e.padding,e.chartType,e.labels,e.values,theme,resolution]);
 }
 export class SceneRenderer{
   constructor(canvas,onStatus=()=>{},onInvalidate=()=>{}){

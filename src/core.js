@@ -21,6 +21,33 @@ export const uid = (prefix='e') => `${prefix}_${globalThis.crypto?.randomUUID?.(
 export const clamp = (n,a,b) => Math.max(a,Math.min(b,n));
 export const color = (value,theme='studio') => value?.startsWith('@') ? ((THEME_COLOR_TOKENS.includes(value.slice(1))&&THEMES[theme]?.[value.slice(1)]) || '#17313A') : (value || '#000000');
 export const fontFamilyFor=(element,theme='studio')=>element.fontRole==='heading'?(THEMES[theme]?.headingFont||'Arial'):element.fontRole==='body'?(THEMES[theme]?.bodyFont||'Arial'):(element.fontFamily||'Arial');
+/** Optional, non-overlapping UTF-16 color spans; plain text remains the content contract. */
+export function textColorRuns(element,start=0,end=element.text.length){
+  const runs=[];let offset=start;
+  for(const span of element.textColors||[]){
+    if(span.end<=start||span.start>=end)continue;
+    if(span.start>offset)runs.push({text:element.text.slice(offset,span.start),fill:element.fill});
+    const right=Math.min(end,span.end);runs.push({text:element.text.slice(Math.max(offset,span.start),right),fill:span.fill});offset=right;
+  }
+  if(offset<end)runs.push({text:element.text.slice(offset,end),fill:element.fill});
+  return runs;
+}
+export function setTextColor(element,fill,start=null,end=null){
+  if(element.type==='text'&&VALID_COLORS.test(fill)&&start===null&&end===null){element.fill=fill;delete element.textColors;return;}
+  if(element.type!=='text'||!VALID_COLORS.test(fill)||!Number.isInteger(start)||!Number.isInteger(end)||start<0||end>element.text.length||start>=end)throw new Error('Invalid text color range.');
+  const spans=[];
+  for(const span of element.textColors||[]){
+    if(span.end<=start||span.start>=end)spans.push({...span});
+    else{if(span.start<start)spans.push({...span,end:start});if(span.end>end)spans.push({...span,start:end});}
+  }
+  if(fill!==element.fill)spans.push({start,end,fill});
+  normalizeTextColors(element,spans);
+}
+function normalizeTextColors(element,spans){
+  const merged=[];
+  for(const span of spans.sort((a,b)=>a.start-b.start)){const last=merged.at(-1);if(last&&last.end===span.start&&last.fill===span.fill)last.end=span.end;else merged.push(span);}
+  if(merged.length)element.textColors=merged;else delete element.textColors;
+}
 let layoutTextMeasurer=null;
 export function configureLayoutMeasurement(measure){if(typeof measure!=='function')throw new Error('A text measurer is required.');layoutTextMeasurer=measure;}
 export const layouts=createLayouts({makeElement,uid,fontFamilyFor,setContent:updateElementContent,measureText:(...args)=>{if(!layoutTextMeasurer)throw new Error('Adaptive layout text measurement is unavailable.');return layoutTextMeasurer(...args);}});
@@ -109,7 +136,30 @@ function continueGrounding(element) {
   });
   return validateGrounding(element,annotations);
 }
-export function updateElementContent(element,props){const before=contentSignature(element);Object.assign(element,props);if('fontFamily'in props&&!('fontRole'in props))delete element.fontRole;if(contentSignature(element)!==before)element.grounding=continueGrounding(element);}
+export function updateElementContent(element,props,textEdit=null){
+  const before=contentSignature(element);
+  if(element.type==='text'&&typeof props.text==='string'&&props.text!==element.text&&element.textColors&&!('textColors'in props)){
+    const old=element.text,next=props.text;let start=0,suffix=0;
+    // UI edits carry exact UTF-16 bounds so repeated words keep their own formatting.
+    if(textEdit&&Number.isInteger(textEdit.start)&&Number.isInteger(textEdit.end)&&textEdit.start>=0&&textEdit.end>=textEdit.start&&textEdit.end<=old.length&&next.length>=textEdit.start+old.length-textEdit.end&&old.slice(0,textEdit.start)===next.slice(0,textEdit.start)&&old.slice(textEdit.end)===next.slice(next.length-(old.length-textEdit.end))){start=textEdit.start;suffix=old.length-textEdit.end;}
+    else{
+      while(start<Math.min(old.length,next.length)&&old[start]===next[start])start++;
+      while(suffix<Math.min(old.length,next.length)-start&&old[old.length-1-suffix]===next[next.length-1-suffix])suffix++;
+    }
+    const end=old.length-suffix,delta=next.length-old.length,insertedEnd=next.length-suffix;
+    const inherited=element.textColors.find(span=>span.start<=start&&span.end>start)||element.textColors.find(span=>span.end===start);
+    const spans=element.textColors.flatMap(span=>[
+      ...(span.start<start?[{...span,end:Math.min(span.end,start)}]:[]),
+      ...(span.end>end?[{...span,start:Math.max(span.start,end)+delta,end:span.end+delta}]:[])
+    ]);
+    if(inherited&&insertedEnd>start)spans.push({start,end:insertedEnd,fill:inherited.fill});
+    normalizeTextColors(element,spans);
+  }
+  Object.assign(element,props);
+  if(element.type==='text'&&'fill'in props&&!('textColors'in props))delete element.textColors;
+  if('fontFamily'in props&&!('fontRole'in props))delete element.fontRole;
+  if(contentSignature(element)!==before)element.grounding=continueGrounding(element);
+}
 export function validateGrounding(element, annotations, seen=new Set()) {
   if(!Array.isArray(annotations)||annotations.length>2000)throw new Error('Invalid grounding annotations.');
   if(annotations.length&&!['text','table'].includes(element.type))throw new Error('Only text and table objects can contain grounding.');
@@ -186,6 +236,13 @@ export function validateDocument(raw) {
       e.w=clamp(e.w,1,16384);e.h=clamp(e.h,1,16384);e.opacity=clamp(e.opacity,0,1);e.strokeWidth=clamp(e.strokeWidth,0,100);
       e.fill=safeColor(v.fill,e.fill);e.stroke=safeColor(v.stroke,'none');e.locked=!!v.locked;e.hidden=!!v.hidden;e.groupId=typeof v.groupId==='string'?v.groupId.slice(0,100):null;e.animation=['none','fade','rise','zoom'].includes(v.animation)?v.animation:'none';
       if(e.type==='text') {e.text=String(v.text||'').slice(0,100000);e.fontFamily=String(v.fontFamily||'Arial').replace(/[^a-zA-Z0-9 ,\-]/g,'').slice(0,100);e.fontSize=clamp(+v.fontSize||40,4,600);e.bold=!!v.bold;e.italic=!!v.italic;e.underline=!!v.underline;e.align=['left','center','right'].includes(v.align)?v.align:'left';e.valign=['top','middle','bottom'].includes(v.valign)?v.valign:'top';e.lineHeight=clamp(+v.lineHeight||1.2,0.8,3);e.padding=clamp(+v.padding||0,0,200);}
+      if(e.type==='text'&&v.textColors!==undefined){
+        if(!Array.isArray(v.textColors)||v.textColors.length>10000)throw new Error('Invalid text color spans.');
+        let end=0;e.textColors=v.textColors.map(span=>{
+          if(!span||!Number.isInteger(span.start)||!Number.isInteger(span.end)||span.start<end||span.start<0||span.end<=span.start||span.end>e.text.length||typeof span.fill!=='string'||!VALID_COLORS.test(span.fill))throw new Error('Invalid text color span.');
+          end=span.end;return{start:span.start,end:span.end,fill:span.fill};
+        });if(!e.textColors.length)delete e.textColors;
+      }
       if(e.type==='image'){if(typeof v.src!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v.src)||v.src.length>30000000)throw new Error('Pictures must be embedded PNG, JPEG or WebP files, at most 22 MB each.');e.src=v.src;e.fit=v.fit==='contain'?'contain':'cover';}
       if(e.type==='chart'){validateDataStyle(e,v);e.chartType=['bar','line','donut'].includes(v.chartType)?v.chartType:'bar';e.labels=(v.labels||['A','B','C']).slice(0,30).map(x=>String(x).slice(0,80));e.values=(v.values||[20,40,70]).slice(0,e.labels.length).map(x=>clamp(Number(x)||0,0,1e12));while(e.values.length<e.labels.length)e.values.push(0);e.showValues=v.showValues!==false;}
       if(e.type==='table'){if(!Array.isArray(v.cells)||!v.cells.length)throw new Error('Invalid table.');e.cells=v.cells.slice(0,30).map(r=>Array.isArray(r)?r.slice(0,12).map(c=>String(c).slice(0,1000)):['']);e.fontSize=clamp(+v.fontSize||22,8,100);validateDataStyle(e,v);validateTableStyle(e,v);}
@@ -247,7 +304,7 @@ export class Store {
   undo(){if(this.pending)this.commit();const cmd=this.past.pop();if(!cmd)return;this.future.push(cmd);this.restore(cmd.before);}
   redo(){const cmd=this.future.pop();if(!cmd)return;this.past.push(cmd);this.restore(cmd.after);}
   replace(doc){const validated=validateDocument(doc);layouts.normalize(validated);this.doc=validated;this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('restore');}
-  setElementContent(element,props,document=this.doc){const slide=document.slides.find(item=>item.elements.some(value=>value.id===element.id));if(!slide)throw new Error('Unknown content element.');layouts.assertProperties(slide,[element.id],props);if(element.locked)throw new Error('Element is locked');updateElementContent(element,props);layouts.normalize(document);}
+  setElementContent(element,props,document=this.doc,textEdit=null){const slide=document.slides.find(item=>item.elements.some(value=>value.id===element.id));if(!slide)throw new Error('Unknown content element.');layouts.assertProperties(slide,[element.id],props);if(element.locked)throw new Error('Element is locked');updateElementContent(element,props,textEdit);layouts.normalize(document);}
   normalizeGrounding(document){for(const element of document.slides.flatMap(slide=>slide.elements))element.grounding=continueGrounding(element);return document;}
   inspectGrounding(objectIds=null){
     if(objectIds!==null&&(!Array.isArray(objectIds)||objectIds.some(id=>!validIdentity(id))))throw new Error('Invalid grounding target IDs.');
@@ -334,7 +391,7 @@ export class Store {
     if(updated)this.emit('grounding');return {updated};
   }
   add(element){this.transaction(`Insert ${element.type}`,()=>this.slide.elements.push(element));this.select([element.id]);return element;}
-  updateSelected(props,label='Format objects'){layouts.assertProperties(this.slide,this.selected.map(element=>element.id),props);this.transaction(label,()=>{for(const e of this.selected)if(!e.locked){Object.assign(e,props);if('fontFamily'in props&&!('fontRole'in props))delete e.fontRole;}});}
+  updateSelected(props,label='Format objects'){layouts.assertProperties(this.slide,this.selected.map(element=>element.id),props);this.transaction(label,()=>{for(const e of this.selected)if(!e.locked)updateElementContent(e,props);});}
   deleteSelected(){layouts.assertFreeform(this.slide,this.selected.map(element=>element.id));this.transaction('Delete objects',()=>{this.slide.elements=this.slide.elements.filter(e=>!this.selection.has(e.id)||e.locked);});this.select([]);}
   duplicateSelected(){const idMap=new Map(),els=copyElements(this.#copySelectionElements(this.selected.filter(e=>!e.locked)),{offset:24,idMap}),components=remapComponents(this.slide.components,idMap,uid,24);this.transaction('Duplicate objects',()=>{this.slide.elements.push(...els);if(components.length)(this.slide.components??=[]).push(...components);});this.select(els.map(e=>e.id));}
   addSlide(layout='blank'){const s=makeSlide(layout,this.doc.theme);this.transaction('New slide',()=>{const i=this.doc.slides.findIndex(s=>s.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);return s;}

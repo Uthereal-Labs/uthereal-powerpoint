@@ -30,8 +30,8 @@ npm run build:site
 ## Features
 
 - Canvas editing: selection and marquee, Shift-select, moving, resizing, rotation, nudge, alignment guides, snapping, zoom, and pan.
-- Text boxes: inline editing, Unicode, wrapping, font selection, size, bold/italic/underline, paragraph alignment, line spacing, and bullets. Formatting applies to the entire text box.
-- Objects: common vector shapes, lines, raster pictures, process diagrams, logical grouping, lock/hide, layering, duplicate, copy/paste, and transactional undo/redo.
+- Text boxes: inline editing, Unicode, wrapping, font selection, size, bold/italic/underline, paragraph alignment, line spacing, and bullets. The text-color palette preserves the selection and labels whether it affects selected words or entire text boxes; other formatting applies to the entire box.
+- Objects: common vector shapes, lines, raster pictures, process diagrams, logical grouping, lock/hide, layering, duplicate, copy/paste, and transactional undo/redo. Shape tools show their active button, crosshair and native-shape preview; click the slide to place, drag to size, or press Esc to cancel.
 - Slides: creation, duplication, deletion, renaming, drag ordering, slide sorter, layouts, themes, backgrounds, and dimensions.
 - Data: editable single-series bar, line, and donut charts with a highlighted bar; tables with tab-separated data editing, relative column widths, per-column alignment, highlighted rows, optional banding and a table font.
 - Themes: nine light and dark themes. Each defines color tokens (`@bg`, `@ink`, `@dark`, `@light`, `@accent`, `@secondary`, `@muted`, `@line`, `@surface`, `@highlight`) plus a `mode` and heading and body fonts for authors.
@@ -56,6 +56,8 @@ npm run build:site
 
 The renderer preserves painter ordering, batches consecutive compatible shapes, grows instance buffers geometrically, and renders on demand. Browser text shaping/rasterization feeds cached GPU textures. Texture caching has a 96 MB soft budget. Moving a text box does not require rerasterizing its contents. Pointer gestures are single undoable transactions.
 
+Text elements may carry optional `textColors` spans (`start`, `end`, `fill`), ordered and non-overlapping in UTF-16 offsets into the unchanged plain `text`. Editing rebases these ranges; rendering, native files, SVG and editable PPTX output retain them. Documents without spans keep their existing shape.
+
 ## GitHub Pages
 
 The deployment workflow tests the source, rebuilds the standalone HTML, and publishes `_site/` using the official GitHub Pages actions. Configure **Settings → Pages → Build and deployment → Source → GitHub Actions** if the repository does not yet have Pages enabled.
@@ -68,7 +70,7 @@ Run `pnpm test`, `pnpm check`, and `pnpm build` for the current native contract 
 
 WebGPU hardware execution, secure-origin autosave, slideshow playback, and full PPTX round-trips have not been verified end-to-end. No frame-rate or production-readiness claim is made.
 
-This is a working first implementation, not complete Microsoft PowerPoint parity. Missing areas include mixed-style text runs, comprehensive slide-master inheritance, SmartArt, embedded media, collaboration, and native Office chart objects. PPTX charts and tables export as drawing objects; donut charts export as raster images. Generic PPTX import is best-effort. Save a native `.aurelia` project to preserve the editor's own document model.
+This is a working first implementation, not complete Microsoft PowerPoint parity. Missing areas include mixed font sizes/faces/emphasis within a text box, comprehensive slide-master inheritance, SmartArt, embedded media, collaboration, and native Office chart objects. PPTX charts and tables export as drawing objects; donut charts export as raster images. Generic PPTX import is best-effort. Save a native `.aurelia` project to preserve the editor's own document model.
 
 The project is independently developed and is not affiliated with Microsoft.
 
