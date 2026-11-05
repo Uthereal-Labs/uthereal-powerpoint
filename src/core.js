@@ -1,4 +1,4 @@
-import {STYLE_FIELDS,STYLE_DEFAULTS,PRESENTATION_FONTS,TEXT_ROLES,validatePresentationStyle,validateTypography,resolveStyle,resolveTypography,captureTypography} from './styles.js';
+import {STYLE_FIELDS,STYLE_DEFAULTS,PRESENTATION_FONTS,TEXT_ROLES,validatePresentationStyle,validateTypography,VALID_COLORS,resolveStyle,resolveTypography,captureTypography} from './styles.js';
 import {createLayouts,validateComponents,remapComponents,componentElementIds} from './layouts.js';
 /** Aurelia document/geometry/command kernel. No browser or renderer dependencies. */
 export const VERSION = 2;
@@ -23,6 +23,40 @@ export const uid = (prefix='e') => `${prefix}_${globalThis.crypto?.randomUUID?.(
 export const clamp = (n,a,b) => Math.max(a,Math.min(b,n));
 export const color = (value,theme='studio') => value?.startsWith('@') ? ((THEME_COLOR_TOKENS.includes(value.slice(1))&&THEMES[theme]?.[value.slice(1)]) || '#17313A') : (value || '#000000');
 export const fontFamilyFor=(element,theme='studio',style={})=>element.textRole?(element.typography?.fontFamily||element.fontFamily||'Arial'):element.fontRole==='heading'?(style?.headingFont||THEMES[theme]?.headingFont||'Arial'):element.fontRole==='body'?(style?.bodyFont||THEMES[theme]?.bodyFont||'Arial'):(element.fontFamily||'Arial');
+/** Optional, non-overlapping UTF-16 color spans; plain text remains the content contract. */
+export function textColorRuns(element,start=0,end=element.text.length){
+  const runs=[];let offset=start;
+  for(const span of element.textColors||[]){
+    if(span.end<=start||span.start>=end)continue;
+    if(span.start>offset)runs.push({text:element.text.slice(offset,span.start),fill:element.fill});
+    const right=Math.min(end,span.end);runs.push({text:element.text.slice(Math.max(offset,span.start),right),fill:span.fill});offset=right;
+  }
+  if(offset<end)runs.push({text:element.text.slice(offset,end),fill:element.fill});
+  return runs;
+}
+function validateTextColors(text,spans){
+  if(!Array.isArray(spans)||spans.length>10000)throw new Error('Invalid text color spans.');
+  let end=0;return spans.map(span=>{
+    if(!span||!Number.isInteger(span.start)||!Number.isInteger(span.end)||span.start<end||span.start<0||span.end<=span.start||span.end>text.length||typeof span.fill!=='string'||!VALID_COLORS.test(span.fill))throw new Error('Invalid text color span.');
+    end=span.end;return {start:span.start,end:span.end,fill:span.fill};
+  });
+}
+export function setTextColor(element,fill,start=null,end=null){
+  if(element.type==='text'&&VALID_COLORS.test(fill)&&start===null&&end===null){updateElementContent(element,{fill});return;}
+  if(element.type!=='text'||!VALID_COLORS.test(fill)||!Number.isInteger(start)||!Number.isInteger(end)||start<0||end>element.text.length||start>=end)throw new Error('Invalid text color range.');
+  const spans=[];
+  for(const span of element.textColors||[]){
+    if(span.end<=start||span.start>=end)spans.push({...span});
+    else{if(span.start<start)spans.push({...span,end:start});if(span.end>end)spans.push({...span,start:end});}
+  }
+  spans.push({start,end,fill});
+  const changed={};normalizeTextColors(changed,spans);updateElementContent(element,{textColors:changed.textColors||[]});
+}
+function normalizeTextColors(element,spans){
+  const merged=[];
+  for(const span of spans.sort((a,b)=>a.start-b.start)){const last=merged.at(-1);if(last&&last.end===span.start&&last.fill===span.fill)last.end=span.end;else merged.push(span);}
+  if(merged.length)element.textColors=merged;else delete element.textColors;
+}
 let layoutTextMeasurer=null;
 export function configureLayoutMeasurement(measure){if(typeof measure!=='function')throw new Error('A text measurer is required.');layoutTextMeasurer=measure;}
 export const layouts=createLayouts({makeElement,uid,resolvePresentationStyle,resolveTypography,setContent:updateElementContent,measureText:(...args)=>{if(!layoutTextMeasurer)throw new Error('Adaptive layout text measurement is unavailable.');return layoutTextMeasurer(...args);}});
@@ -35,7 +69,7 @@ export function setPresentationStyle(document,patch={}, {reset=false}={}){
 }
 export function resetElementTypography(document,ids){
  const targets=new Set(ids);
- for(const slide of document.slides){layouts.assertProperties(slide,slide.elements.filter(e=>targets.has(e.id)).map(e=>e.id),{fontSize:18});for(const element of slide.elements)if(targets.has(element.id)&&element.textRole)delete element.typography;}
+ for(const slide of document.slides){layouts.assertProperties(slide,slide.elements.filter(e=>targets.has(e.id)).map(e=>e.id),{fontSize:18});for(const element of slide.elements)if(targets.has(element.id)&&element.textRole){delete element.typography;delete element.textColors;}}
  return layouts.normalize(document);
 }
 export const escapeHTML = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -123,7 +157,33 @@ function continueGrounding(element) {
   });
   return validateGrounding(element,annotations);
 }
-export function updateElementContent(element,props){const before=contentSignature(element);captureTypography(element,props);Object.assign(element,props);if('fontFamily'in props&&!('fontRole'in props))delete element.fontRole;if(contentSignature(element)!==before)element.grounding=continueGrounding(element);}
+export function updateElementContent(element,props,textEdit=null){
+  const before=contentSignature(element);
+  if(element.type==='text'&&'fill'in props&&(typeof props.fill!=='string'||!VALID_COLORS.test(props.fill)))throw new Error('Invalid text color.');
+  if(element.type==='text'&&'textColors'in props)props={...props,textColors:validateTextColors(props.text??element.text,props.textColors)};
+  captureTypography(element,props);
+  if(element.type==='text'&&typeof props.text==='string'&&props.text!==element.text&&element.textColors&&!('textColors'in props)){
+    const old=element.text,next=props.text;let start=0,suffix=0;
+    // UI edits carry exact UTF-16 bounds so repeated words keep their own formatting.
+    if(textEdit&&Number.isInteger(textEdit.start)&&Number.isInteger(textEdit.end)&&textEdit.start>=0&&textEdit.end>=textEdit.start&&textEdit.end<=old.length&&next.length>=textEdit.start+old.length-textEdit.end&&old.slice(0,textEdit.start)===next.slice(0,textEdit.start)&&old.slice(textEdit.end)===next.slice(next.length-(old.length-textEdit.end))){start=textEdit.start;suffix=old.length-textEdit.end;}
+    else{
+      while(start<Math.min(old.length,next.length)&&old[start]===next[start])start++;
+      while(suffix<Math.min(old.length,next.length)-start&&old[old.length-1-suffix]===next[next.length-1-suffix])suffix++;
+    }
+    const end=old.length-suffix,delta=next.length-old.length,insertedEnd=next.length-suffix;
+    const inherited=element.textColors.find(span=>span.start<=start&&span.end>start)||element.textColors.find(span=>span.end===start);
+    const spans=element.textColors.flatMap(span=>[
+      ...(span.start<start?[{...span,end:Math.min(span.end,start)}]:[]),
+      ...(span.end>end?[{...span,start:Math.max(span.start,end)+delta,end:span.end+delta}]:[])
+    ]);
+    if(inherited&&insertedEnd>start)spans.push({start,end:insertedEnd,fill:inherited.fill});
+    normalizeTextColors(element,spans);
+  }
+  Object.assign(element,props);
+  if(element.type==='text'&&('fill'in props&&!('textColors'in props)||element.textColors?.length===0))delete element.textColors;
+  if('fontFamily'in props&&!('fontRole'in props))delete element.fontRole;
+  if(contentSignature(element)!==before)element.grounding=continueGrounding(element);
+}
 export function validateGrounding(element, annotations, seen=new Set()) {
   if(!Array.isArray(annotations)||annotations.length>2000)throw new Error('Invalid grounding annotations.');
   if(annotations.length&&!['text','table'].includes(element.type))throw new Error('Only text and table objects can contain grounding.');
@@ -167,7 +227,6 @@ export function importExternalDocument(raw) {
   return validateDocument(out);
 }
 const VALID_TYPES=new Set(['rect','roundRect','ellipse','triangle','diamond','arrow','star','line','text','image','chart','table']);
-const VALID_COLORS=/^(?:@[a-z]+|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|none)$/;
 const fontName=v=>String(v).replace(/[^a-zA-Z0-9 ,\-]/g,'').slice(0,100);
 /** Optional chart/table styling; absent properties stay absent so older documents round-trip unchanged. */
 function validateDataStyle(e,v){
@@ -223,6 +282,7 @@ export function validateDocument(raw) {
       e.w=clamp(e.w,1,16384);e.h=clamp(e.h,1,16384);e.opacity=clamp(e.opacity,0,1);e.strokeWidth=clamp(e.strokeWidth,0,100);
       e.fill=safeColor(v.fill,e.fill);e.stroke=safeColor(v.stroke,'none');e.locked=!!v.locked;e.hidden=!!v.hidden;e.groupId=typeof v.groupId==='string'?v.groupId.slice(0,100):null;e.animation=['none','fade','rise','zoom'].includes(v.animation)?v.animation:'none';
       if(e.type==='text') {e.text=String(v.text||'').slice(0,100000);e.fontFamily=String(v.fontFamily||'Arial').replace(/[^a-zA-Z0-9 ,\-]/g,'').slice(0,100);e.fontSize=clamp(+v.fontSize||40,4,600);e.bold=!!v.bold;e.italic=!!v.italic;e.underline=!!v.underline;e.align=['left','center','right'].includes(v.align)?v.align:'left';e.valign=['top','middle','bottom'].includes(v.valign)?v.valign:'top';e.lineHeight=clamp(+v.lineHeight||1.2,0.8,3);e.padding=clamp(+v.padding||0,0,200);}
+      if(e.type==='text'&&v.textColors!==undefined){const spans=validateTextColors(e.text,v.textColors);if(spans.length)e.textColors=spans;}
       if(e.type==='image'){if(typeof v.src!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v.src)||v.src.length>30000000)throw new Error('Pictures must be embedded PNG, JPEG or WebP files, at most 22 MB each.');e.src=v.src;e.fit=v.fit==='contain'?'contain':'cover';}
       if(e.type==='chart'){validateDataStyle(e,v);e.chartType=['bar','line','donut'].includes(v.chartType)?v.chartType:'bar';e.labels=(v.labels||['A','B','C']).slice(0,30).map(x=>String(x).slice(0,80));e.values=(v.values||[20,40,70]).slice(0,e.labels.length).map(x=>clamp(Number(x)||0,0,1e12));while(e.values.length<e.labels.length)e.values.push(0);e.showValues=v.showValues!==false;}
       if(e.type==='table'){if(!Array.isArray(v.cells)||!v.cells.length)throw new Error('Invalid table.');e.cells=v.cells.slice(0,30).map(r=>Array.isArray(r)?r.slice(0,12).map(c=>String(c).slice(0,1000)):['']);e.fontSize=clamp(+v.fontSize||22,8,100);validateDataStyle(e,v);validateTableStyle(e,v);}
@@ -285,7 +345,19 @@ export class Store {
   undo(){if(this.pending)this.commit();const cmd=this.past.pop();if(!cmd)return;this.future.push(cmd);this.restore(cmd.before);}
   redo(){const cmd=this.future.pop();if(!cmd)return;this.past.push(cmd);this.restore(cmd.after);}
   replace(doc){const validated=validateDocument(doc);layouts.normalize(validated);this.doc=validated;this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('load');}
-  setElementContent(element,props,document=this.doc){const slide=document.slides.find(item=>item.elements.some(value=>value.id===element.id));if(!slide)throw new Error('Unknown content element.');layouts.assertProperties(slide,[element.id],props);if(element.locked)throw new Error('Element is locked');updateElementContent(element,props);layouts.normalize(document);}
+  setElementContent(element,props,document=this.doc,textEdit=null){const slide=document.slides.find(item=>item.elements.some(value=>value.id===element.id));if(!slide)throw new Error('Unknown content element.');layouts.assertProperties(slide,[element.id],props);if(element.locked)throw new Error('Element is locked');updateElementContent(element,props,textEdit);layouts.normalize(document);}
+  colorText(ids,fill,range=null){
+    if(range!==null&&(!range||typeof range!=='object'||!Number.isInteger(range.start)||!Number.isInteger(range.end)))throw new Error('Invalid text color range.');
+    if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length||range!==null&&ids.length!==1)throw new Error('Choose text objects, or one text range.');
+    const changes=ids.map(id=>{
+      const element=this.slide.elements.find(item=>item.id===id);if(!element||element.type!=='text')throw new Error('Unknown text object.');
+      const draft=clone(element);setTextColor(draft,fill,range?.start??null,range?.end??null);
+      const props=range?{textColors:draft.textColors||[]}:{fill};
+      layouts.assertProperties(this.slide,[id],props);if(element.locked)throw new Error('Element is locked');
+      return {element,props};
+    });
+    this.transaction(range?'Color selected text':'Color text box',()=>{for(const {element,props}of changes)this.setElementContent(element,props);});
+  }
   normalizeGrounding(document){for(const element of document.slides.flatMap(slide=>slide.elements))element.grounding=continueGrounding(element);return document;}
   inspectGrounding(objectIds=null){
     if(objectIds!==null&&(!Array.isArray(objectIds)||objectIds.some(id=>!validIdentity(id))))throw new Error('Invalid grounding target IDs.');

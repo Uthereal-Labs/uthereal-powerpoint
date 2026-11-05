@@ -1,4 +1,4 @@
-import {layouts,resolvePresentationStyle,fontFamilyFor,makeDocument,makeElement,makeSlide,validateDocument,stripGrounding,importExternalDocument,color,clamp,escapeHTML} from './core.js';
+import {layouts,resolvePresentationStyle,fontFamilyFor,makeDocument,makeElement,makeSlide,validateDocument,stripGrounding,importExternalDocument,color,clamp,escapeHTML,textColorRuns,setTextColor} from './core.js';
 import {expandElement,paintSlide2D,ImagePool} from './renderer.js';
 /** ZIP + PresentationML interchange. No network, macros, executable content or external relationships. */
 const UTF8=new TextEncoder();
@@ -36,8 +36,11 @@ const xmlRels=items=>XML_HEAD+`<Relationships xmlns="http://schemas.openxmlforma
 function solidXML(fill,theme,opacity=1){if(fill==='none')return'<a:noFill/>';const c=color(fill,theme).slice(1),alpha=opacity*(c.length===8?parseInt(c.slice(6),16)/255:1);return`<a:solidFill><a:srgbClr val="${c.slice(0,6)}">${alpha<1?`<a:alpha val="${Math.round(alpha*100000)}"/>`:''}</a:srgbClr></a:solidFill>`;}
 function transformXML(e){return`<a:xfrm rot="${Math.round((e.rotation||0)*60000)}"><a:off x="${emu(e.x)}" y="${emu(e.y)}"/><a:ext cx="${emu(e.w)}" cy="${emu(e.h)}"/></a:xfrm>`;}
 function textBodyXML(e,theme){
- const pad=emu(e.padding||0),rPr=`sz="${Math.round((e.fontSize||24)*75)}" b="${e.bold?1:0}" i="${e.italic?1:0}"${e.underline?' u="sng"':''}`;
- return`<p:txBody><a:bodyPr wrap="square" lIns="${pad}" tIns="${pad}" rIns="${pad}" bIns="${pad}" anchor="${({top:'t',middle:'ctr',bottom:'b'})[e.valign]||'t'}"><a:noAutofit/></a:bodyPr><a:lstStyle/>${String(e.text||'').split('\n').map(t=>`<a:p><a:pPr algn="${({left:'l',center:'ctr',right:'r'})[e.align]||'l'}"><a:lnSpc><a:spcPct val="${Math.round((e.lineHeight||1.2)*100000)}"/></a:lnSpc><a:spcBef><a:spcPts val="0"/></a:spcBef><a:spcAft><a:spcPts val="0"/></a:spcAft></a:pPr><a:r><a:rPr lang="en-US" ${rPr}>${solidXML(e.fill,theme,e.opacity??1)}<a:latin typeface="${xmlEsc(fontFamilyFor(e,theme))}"/><a:ea typeface="${xmlEsc(fontFamilyFor(e,theme))}"/><a:cs typeface="${xmlEsc(fontFamilyFor(e,theme))}"/></a:rPr><a:t xml:space="preserve">${xmlEsc(t)}</a:t></a:r><a:endParaRPr lang="en-US" ${rPr}/></a:p>`).join('')}</p:txBody>`;
+ const pad=emu(e.padding||0),rPr=`sz="${Math.round((e.fontSize||24)*75)}" b="${e.bold?1:0}" i="${e.italic?1:0}"${e.underline?' u="sng"':''}`;let offset=0;
+ return`<p:txBody><a:bodyPr wrap="square" lIns="${pad}" tIns="${pad}" rIns="${pad}" bIns="${pad}" anchor="${({top:'t',middle:'ctr',bottom:'b'})[e.valign]||'t'}"><a:noAutofit/></a:bodyPr><a:lstStyle/>${String(e.text||'').split('\n').map(t=>{
+  const runs=textColorRuns(e,offset,offset+t.length);offset+=t.length+1;
+  return`<a:p><a:pPr algn="${({left:'l',center:'ctr',right:'r'})[e.align]||'l'}"><a:lnSpc><a:spcPct val="${Math.round((e.lineHeight||1.2)*100000)}"/></a:lnSpc><a:spcBef><a:spcPts val="0"/></a:spcBef><a:spcAft><a:spcPts val="0"/></a:spcAft></a:pPr>${runs.map(run=>`<a:r><a:rPr lang="en-US" ${rPr}>${solidXML(run.fill,theme,e.opacity??1)}<a:latin typeface="${xmlEsc(fontFamilyFor(e,theme))}"/><a:ea typeface="${xmlEsc(fontFamilyFor(e,theme))}"/><a:cs typeface="${xmlEsc(fontFamilyFor(e,theme))}"/></a:rPr><a:t xml:space="preserve">${xmlEsc(run.text)}</a:t></a:r>`).join('')}<a:endParaRPr lang="en-US" ${rPr}/></a:p>`;
+ }).join('')}</p:txBody>`;
 }
 function shapeXML(e,id,theme){
  const preset={rect:'rect',roundRect:'roundRect',ellipse:'ellipse',triangle:'triangle',diamond:'diamond',arrow:'rightArrow',star:'star5',line:'rect'}[e.type]||'rect';
@@ -113,7 +116,20 @@ export async function importPPTX(buffer){
    if(kind==='pic'){const embed=firstNamed(node,'blip')?.getAttributeNS(R_NS,'embed'),target=rels.get(embed)?.path,bytes=files.get(target);if(bytes){const ext=target.split('.').pop().toLowerCase(),mime={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp'}[ext];if(mime)s.elements.push(makeElement('image',{...tr,name,src:bytesData(bytes,mime),fit:'cover'}));else warnings.add('Unsupported picture formats (including SVG/EMF/WMF) are skipped.');}if(firstNamed(node,'srcRect'))warnings.add('Picture crop windows are approximated by center-cover.');continue;}
    const geometry=firstNamed(sp,'prstGeom')?.getAttribute('prst')||'rect',type={rect:'rect',roundRect:'roundRect',ellipse:'ellipse',triangle:'triangle',diamond:'diamond',rightArrow:'arrow',star5:'star',line:'line'}[geometry]||'rect',tx=childrenNamed(node,'txBody')[0],fill=getColor(sp,'none'),ln=childrenNamed(sp,'ln')[0];
    if(fill!=='none'||!tx)s.elements.push(makeElement(type,{...tr,name,fill,stroke:getColor(ln,'none'),strokeWidth:(+ln?.getAttribute('w')||0)/9525}));
-   if(tx){const paragraphs=childrenNamed(tx,'p'),text=paragraphs.map(p=>Array.from(p.children).map(child=>child.localName==='br'?'\n':allNamed(child,'t').map(t=>t.textContent).join('')).join('')).join('\n');const style=firstNamed(tx,'rPr')||firstNamed(tx,'defRPr')||firstNamed(tx,'endParaRPr'),body=firstNamed(tx,'bodyPr'),ppr=firstNamed(tx,'pPr'),font=firstNamed(style,'latin')?.getAttribute('typeface');s.elements.push(makeElement('text',{...tr,name,text,fontSize:(+style?.getAttribute('sz')||2400)/75*offset.sy,fontFamily:font?.startsWith('+')?'Arial':font||'Arial',bold:style?.getAttribute('b')==='1',italic:style?.getAttribute('i')==='1',underline:style?.getAttribute('u')==='sng',fill:getColor(style,'#17313A'),align:({l:'left',ctr:'center',r:'right'})[ppr?.getAttribute('algn')]||'left',padding:(+body?.getAttribute('lIns')||0)/9525,valign:({t:'top',ctr:'middle',b:'bottom'})[body?.getAttribute('anchor')]||'top'}));if(allNamed(tx,'rPr').length>1)warnings.add('Mixed text runs are normalized to one style per text box.');}
+   if(tx){
+    const paragraphs=childrenNamed(tx,'p'),text=paragraphs.map(p=>Array.from(p.children).map(child=>child.localName==='br'?'\n':allNamed(child,'t').map(t=>t.textContent).join('')).join('')).join('\n');
+    const style=firstNamed(tx,'rPr')||firstNamed(tx,'defRPr')||firstNamed(tx,'endParaRPr'),body=firstNamed(tx,'bodyPr'),ppr=firstNamed(tx,'pPr'),font=firstNamed(style,'latin')?.getAttribute('typeface');
+    const element=makeElement('text',{...tr,name,text,fontSize:(+style?.getAttribute('sz')||2400)/75*offset.sy,fontFamily:font?.startsWith('+')?'Arial':font||'Arial',bold:style?.getAttribute('b')==='1',italic:style?.getAttribute('i')==='1',underline:style?.getAttribute('u')==='sng',fill:getColor(style,'#17313A'),align:({l:'left',ctr:'center',r:'right'})[ppr?.getAttribute('algn')]||'left',padding:(+body?.getAttribute('lIns')||0)/9525,valign:({t:'top',ctr:'middle',b:'bottom'})[body?.getAttribute('anchor')]||'top'});
+    s.elements.push(element);let position=0;
+    for(const paragraph of paragraphs){
+     for(const child of paragraph.children){
+      const value=child.localName==='br'?'\n':allNamed(child,'t').map(item=>item.textContent).join('');
+      const fill=getColor(firstNamed(child,'rPr'),getColor(firstNamed(paragraph,'defRPr'),element.fill));
+      if(value.length&&fill!==element.fill)setTextColor(element,fill,position,position+value.length);
+      position+=value.length;
+     }position++;
+    }if(allNamed(tx,'rPr').length>1)warnings.add('Mixed font sizes, faces and emphasis are normalized per text box; text colors are retained.');
+   }
    if(!childrenNamed(sp,'xfrm').length)warnings.add('Layout/master placeholder inheritance is approximated; some imported positions need adjustment.');
   }};readTree(firstNamed(xml,'spTree'));
   const notes=[...rels.values()].find(r=>r.type.endsWith('/notesSlide'));if(notes&&files.has(notes.path)){const n=parseXML(files.get(notes.path));s.notes=allNamed(n,'sp').filter(sp=>firstNamed(sp,'ph')?.getAttribute('type')==='body').map(sp=>allNamed(sp,'p').map(p=>allNamed(p,'t').map(t=>t.textContent).join('')).join('\n')).join('\n');}

@@ -68,7 +68,7 @@ export function createLayouts({makeElement,uid,resolvePresentationStyle,resolveT
       const component=member(slide,id);if(!component)continue;
       if(Object.keys(props).some(key=>key!=='locked'))assertUnlocked(slide,component);
       const slot=component.chart_id===id?'chart':layoutRows(component).flatMap(row=>Object.entries(row)).find(([key,value])=>key!=='id'&&value===id)?.[0];
-      const owned=new Set([...geometryKeys,...(component.chart_id!==id?['fill']:[]),...(slide.elements.find(element=>element.id===id)?.type==='text'?['padding']:[]),...(slot==='panel_id'?['radius']:[]),...(['title_id','body_id','value_id','label_id','context_id','connector_id','text_id','dot_id'].includes(slot)||component.title_id===id||component.takeaway_id===id?['hidden']:[]),...(slot==='number_id'?['text']:[])]);
+      const owned=new Set([...geometryKeys,...(component.chart_id!==id&&slide.elements.find(element=>element.id===id)?.type!=='text'?['fill']:[]),...(slide.elements.find(element=>element.id===id)?.type==='text'?['padding']:[]),...(slot==='panel_id'?['radius']:[]),...(['title_id','body_id','value_id','label_id','context_id','connector_id','text_id','dot_id'].includes(slot)||component.title_id===id||component.takeaway_id===id?['hidden']:[]),...(slot==='number_id'?['text']:[])]);
       if(Object.keys(props).some(key=>owned.has(key)))throw new Error('Detach layout before changing its managed geometry or style.');
     }
   };
@@ -91,7 +91,7 @@ export function createLayouts({makeElement,uid,resolvePresentationStyle,resolveT
     for(const id of componentElementIds(component)){const element=get(id);if(element.textRole)elements.set(id,{...element,...resolveTypography(element,style)});}
     const region=area(document,{title_id:component.title_id,elements:[...elements.values()],frame:component.frame}),frame=region.frame,fit=[];
     const problem=(reason,detail)=>fit.push({reason,...detail});
-    const place=(id,props)=>{const element=get(id);placements.push({id,props:{rotation:0,groupId:component.id,...(element.textRole?resolveTypography(element,style):{}),...props}});};
+    const place=(id,props)=>{const element=get(id);placements.push({id,props:{rotation:0,groupId:component.id,...props,...(element.textRole?resolveTypography(element,style):{})}});};
     const measure=(element,width)=>measureComponentText(element,width,measureText,document.theme);
     const textBox=(id,x,y,w,h,extra={})=>place(id,{x,y,w:Math.max(1,w),h:Math.max(1,h),padding:componentTextInset(get(id)),...extra});
     if(frame.x<0||frame.y<0||frame.w<=0||frame.h<=0||frame.x+frame.w>document.width||frame.y+frame.h>region.footer.y)problem('region_outside_content_area',{available:region.footer.y});

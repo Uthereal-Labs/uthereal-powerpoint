@@ -1,4 +1,4 @@
-import {fontFamilyFor,color,clamp} from './core.js';
+import {fontFamilyFor,color,clamp,textColorRuns} from './core.js';
 /** Ordered retained-scene renderer: analytic GPU shapes + cached, shaped text/image tiles. */
 export const SHAPE_IDS={rect:0,roundRect:1,ellipse:2,triangle:3,diamond:4,arrow:5,star:6,line:7};
 export const GPU_SHADER=`
@@ -41,24 +41,75 @@ fn distance(p:vec2f,h:vec2f,kind:u32,r:f32)->f32 {
 export function rgba(value,theme){const c=color(value,theme);if(c==='none')return[0,0,0,0];const h=c.slice(1);return[parseInt(h.slice(0,2),16)/255,parseInt(h.slice(2,4),16)/255,parseInt(h.slice(4,6),16)/255,h.length===8?parseInt(h.slice(6,8),16)/255:1];}
 export function fontCSS(e,theme='studio',style={}){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${fontFamilyFor(e,theme,style)}", sans-serif`;}
 export function wrapText(ctx,text,maxWidth){
+  return wrapTextLines(ctx,text,maxWidth).map(line=>line.text);
+}
+/** Wrapping plus source offsets, shared by canvas painting and SVG export. */
+export function wrapTextLines(ctx,text,maxWidth){
   const lines=[];maxWidth=Math.max(1,maxWidth);
-  for(const para of String(text).replace(/\r\n?/g,'\n').split('\n')){
-    if(!para){lines.push('');continue;}let line='';
-    for(const token of para.match(/\S+\s*|\s+/gu)||[]){
-      if(ctx.measureText(line+token.trimEnd()).width<=maxWidth){line+=token;continue;}
-      if(line.trim()){lines.push(line.trimEnd());line='';}
-      if(ctx.measureText(token.trimEnd()).width<=maxWidth){line=token.trimStart();continue;}
+  const paragraphs=String(text).split(/(\r\n?|\n)/);let offset=0;
+  for(let paragraph=0;paragraph<paragraphs.length;paragraph+=2){
+    const para=paragraphs[paragraph];let line='',start=offset;
+    for(const match of para.matchAll(/\S+\s*|\s+/gu)){
+      const token=match[0],tokenStart=offset+match.index;
+      if(ctx.measureText(line+token.trimEnd()).width<=maxWidth){if(!line)start=tokenStart;line+=token;continue;}
+      if(line.trim()){lines.push({text:line.trimEnd(),start});line='';}
+      if(ctx.measureText(token.trimEnd()).width<=maxWidth){line=token.trimStart();start=tokenStart+token.length-line.length;continue;}
       const chars=globalThis.Intl?.Segmenter?[...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(token)].map(x=>x.segment):Array.from(token);
-      for(const ch of chars){if(line&&ctx.measureText(line+ch).width>maxWidth){lines.push(line);line='';}line+=ch;}
-    }lines.push(line.trimEnd());
+      let consumed=0;
+      for(const ch of chars){if(line&&ctx.measureText(line+ch).width>maxWidth){lines.push({text:line,start});line='';}if(!line)start=tokenStart+consumed;line+=ch;consumed+=ch.length;}
+    }lines.push({text:line.trimEnd(),start});offset+=para.length+(paragraphs[paragraph+1]?.length||0);
   }return lines;
 }
-export function drawText2D(ctx,e,theme){
-  ctx.font=fontCSS(e,theme);ctx.textBaseline='alphabetic';ctx.fillStyle=color(e.fill,theme);ctx.textAlign=e.align||'left';
-  const pad=e.padding??4,fs=e.fontSize||24,lh=fs*(e.lineHeight||1.2),lines=wrapText(ctx,e.text,e.w-2*pad),height=lines.length*lh;
+const textClipCache=new Map();
+let textClipMeasurer=null;
+/** Measure visual selection rectangles on one shaped text node, including bidi runs and ligatures. */
+function textRunClips(ctx,text,runs){
+  const direction=ctx.direction==='inherit'&&ctx.canvas?.nodeType===1?getComputedStyle(ctx.canvas).direction:ctx.direction==='rtl'?'rtl':'ltr',key=JSON.stringify([ctx.font,direction,ctx.fontKerning,ctx.fontStretch,ctx.fontVariantCaps,ctx.letterSpacing,ctx.wordSpacing,text,runs.map(run=>run.text.length)]);
+  if(textClipCache.has(key))return textClipCache.get(key);
+  if(!globalThis.document?.createRange){
+    let prefix='';return runs.map(run=>{const x=ctx.measureText(prefix).width;prefix+=run.text;return [{x,w:ctx.measureText(prefix).width-x}];});
+  }
+  if(!textClipMeasurer){
+    textClipMeasurer=document.createElement('span');textClipMeasurer.setAttribute('aria-hidden','true');
+    Object.assign(textClipMeasurer.style,{position:'fixed',left:'0',top:'-10000px',visibility:'hidden',whiteSpace:'pre',pointerEvents:'none',unicodeBidi:'isolate'});
+    document.body.append(textClipMeasurer);document.fonts?.addEventListener('loadingdone',()=>textClipCache.clear());
+  }
+  Object.assign(textClipMeasurer.style,{font:ctx.font,direction,fontKerning:ctx.fontKerning||'auto',fontStretch:ctx.fontStretch||'normal',fontVariantCaps:ctx.fontVariantCaps||'normal',letterSpacing:ctx.letterSpacing||'0px',wordSpacing:ctx.wordSpacing||'0px'});
+  textClipMeasurer.textContent=text;
+  const origin=textClipMeasurer.getBoundingClientRect(),range=document.createRange();let start=0;
+  const clips=runs.map(run=>{
+    range.setStart(textClipMeasurer.firstChild,start);start+=run.text.length;range.setEnd(textClipMeasurer.firstChild,start);
+    return Array.from(range.getClientRects(),rect=>({x:rect.left-origin.left,w:rect.width}));
+  });
+  if(textClipCache.size>=128)textClipCache.delete(textClipCache.keys().next().value);
+  textClipCache.set(key,clips);return clips;
+}
+export function drawText2D(ctx,e,theme,scrollTop=0,style={}){
+  ctx.font=fontCSS(e,theme,style);ctx.textBaseline='alphabetic';ctx.fillStyle=color(e.fill,theme);ctx.textAlign=e.align||'left';
+  const pad=e.padding??4,fs=e.fontSize||24,lh=fs*(e.lineHeight||1.2),lines=wrapTextLines(ctx,e.text,e.w-2*pad),height=lines.length*lh;
   let top=pad;if(e.valign==='middle')top=Math.max(pad,(e.h-height)/2);if(e.valign==='bottom')top=Math.max(pad,e.h-height-pad);
   const x=e.align==='center'?e.w/2:e.align==='right'?e.w-pad:pad;
-  for(let i=0;i<lines.length;i++){const y=top+i*lh+fs*.85;if(y-fs>e.h)break;ctx.fillText(lines[i],x,y);if(e.underline){const w=ctx.measureText(lines[i]).width,xx=x-(e.align==='center'?w/2:e.align==='right'?w:0);ctx.fillRect(xx,y+fs*.12,w,Math.max(1,fs/20));}}
+  for(let i=0;i<lines.length;i++){
+    const y=top+i*lh+fs*.85;if(y-fs>e.h+scrollTop)break;if(y+lh<scrollTop)continue;
+    const line=lines[i],width=ctx.measureText(line.text).width,left=x-(e.align==='center'?width/2:e.align==='right'?width:0);
+    ctx.textAlign='left';
+    const runs=textColorRuns(e,line.start,line.start+line.text.length),clips=runs.length>1?textRunClips(ctx,line.text,runs):null;
+    for(const [index,run]of runs.entries()){
+      if(run.fill==='none')continue;
+      if(clips){
+        ctx.save();ctx.beginPath();
+        for(const rect of clips[index]){
+          // Keep glyph overhang at the visual line edges; internal boundaries divide the same shaped ink.
+          const before=rect.x<.01?fs:0,after=rect.x+rect.w>=width-.01?fs:0;
+          ctx.rect(left+rect.x-before,y-fs*2,rect.w+before+after,fs*4+lh);
+        }
+        ctx.clip();
+      }
+      ctx.fillStyle=color(run.fill,theme);ctx.fillText(line.text,left,y);
+      if(e.underline)ctx.fillRect(left,y+fs*.12,width,Math.max(1,fs/20));
+      if(clips)ctx.restore();
+    }
+  }
 }
 export function primitivePath(ctx,e){
   const w=e.w,h=e.h;ctx.beginPath();
@@ -137,7 +188,7 @@ export function paintSlide2D(canvas,slide,doc,images,{scale=1,ignoreId=null}={})
 }
 function tileSignature(e,theme,resolution){
   if(e.type==='image')return `${e.id}|${e.w}|${e.h}|${e.fit}|${e.src.length}|${resolution}`;
-  return JSON.stringify([e.type,e.text,e.w,e.h,e.fill,e.fontSize,e.fontFamily,e.fontRole,e.bold,e.italic,e.underline,e.align,e.valign,e.lineHeight,e.padding,e.chartType,e.labels,e.values,theme,resolution]);
+  return JSON.stringify([e.type,e.text,e.textColors,e.w,e.h,e.fill,e.fontSize,e.fontFamily,e.fontRole,e.bold,e.italic,e.underline,e.align,e.valign,e.lineHeight,e.padding,e.chartType,e.labels,e.values,theme,resolution]);
 }
 export class SceneRenderer{
   constructor(canvas,onStatus=()=>{},onInvalidate=()=>{}){

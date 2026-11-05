@@ -110,8 +110,8 @@ test('native layout boundary rejects irrelevant fields and blank new rows while 
 });
 test('managed property guard rejects overwritten styles but preserves editable typography and chart styling',()=>{
  const {doc,component,slide}=fixture(),store=new Store(doc),title=element(slide,component.steps[0].title_id);store.select([title.id]);const before=JSON.stringify(doc);
- for(const props of [{x:1},{padding:24},{fill:'#FF0000'},{hidden:true}]){assert.throws(()=>store.updateSelected(props),/Detach/);assert.throws(()=>store.setElementContent(title,props),/Detach/);assert.equal(JSON.stringify(doc),before);}
- store.updateSelected({bold:false,fontSize:28,fontFamily:'Verdana'});assert.equal(title.fontSize,28);assert.equal(title.fontRole,undefined);assert.equal(title.bold,false);
+ for(const props of [{x:1},{padding:24},{hidden:true}]){assert.throws(()=>store.updateSelected(props),/Detach/);assert.throws(()=>store.setElementContent(title,props),/Detach/);assert.equal(JSON.stringify(doc),before);}
+ store.updateSelected({bold:false,fontSize:28,fontFamily:'Verdana',fill:'#FF0000'});assert.equal(title.typography.fill,'#FF0000');assert.equal(title.fill,'#FF0000');assert.equal(title.fontSize,28);assert.equal(title.fontRole,undefined);assert.equal(title.bold,false);
  const evidenceDoc=makeDocument(),chart=makeElement('chart',{chartType:'bar',labels:['A'],values:[1]});evidenceDoc.slides[0].elements=[chart];layouts.create(evidenceDoc,evidenceDoc.slides[0].id,{type:'takeaway_evidence',takeaway:'A chart supports the claim.',chart_id:chart.id});assert.doesNotThrow(()=>layouts.assertProperties(evidenceDoc.slides[0],[chart.id],{fill:'#FF0000'}));
 });
 test('locked members protect layout edits, detachment and sibling text reflow atomically',()=>{
