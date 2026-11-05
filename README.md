@@ -44,6 +44,7 @@ npm run build:site
 | File | Responsibility |
 | --- | --- |
 | `src/core.js` | Document model, validation, geometry, selection, transactions, undo/redo. |
+| `src/layouts.js` | Adaptive layout membership, content validation, measurement, reflow, and copy/remap rules. |
 | `src/renderer.js` | WebGPU pipelines and WGSL, instanced analytic shapes, cached text/image tiles, Canvas 2D fallback. |
 | `src/demo.js` | Editable example presentation. |
 | `src/icons.js` | Inline SVG UI icons. |
@@ -63,12 +64,42 @@ Pages provides the secure origin needed by WebGPU, but hardware/browser availabi
 
 ## Validation and limitations
 
-All **34 kernel tests pass** locally. A previous development-session browser run completed 14 editor integration checks using Canvas 2D, but stopped at slideshow-test setup. That browser run is not an automated test suite included here.
+Run `pnpm test`, `pnpm check`, and `pnpm build` for the current native contract suite. It covers table geometry and editable export, grounding, and adaptive layout editing and persistence. Browser validation also covers manual text edits, undo, themes, save/reopen, export, and isolated viewer mode.
 
 WebGPU hardware execution, secure-origin autosave, slideshow playback, and full PPTX round-trips have not been verified end-to-end. No frame-rate or production-readiness claim is made.
 
 This is a working first implementation, not complete Microsoft PowerPoint parity. Missing areas include mixed-style text runs, comprehensive slide-master inheritance, SmartArt, embedded media, collaboration, and native Office chart objects. PPTX charts and tables export as drawing objects; donut charts export as raster images. Generic PPTX import is best-effort. Save a native `.aurelia` project to preserve the editor's own document model.
 
 The project is independently developed and is not affiliated with Microsoft.
+
+## Adaptive layouts
+
+The model or user chooses a layout and supplies content. The editor arranges it.
+The catalog includes a horizontal process with 2–6 steps, a two-way comparison,
+1–4 key figures, and a takeaway supported by points or an existing chart.
+
+Each layout keeps ordinary editable objects as its only content source. The slide
+stores their membership and order. Text and theme changes reflow those objects in
+the same undo transaction. Copy and native import remap their references together.
+Choose **Detach layout** to edit their geometry or managed appearance freely.
+Locked members must be unlocked before changing their layout.
+
+Colors use theme tokens. Text can use the `heading` or `body` font role. Choosing
+an explicit font removes that role. All text measurement and output use the same
+resolved font. A layout reports overflow when it cannot fit its content at a
+readable size; it does not remove text or split slides automatically.
+
+The native browser API exposes `layouts.create`, `update`, `detach`, `normalize`,
+and `inspect`. Content fields follow the chosen layout type. Updates keep existing
+item IDs to retain their text and associations. Layout output remains editable in
+PowerPoint, but automatic reflow belongs to the native editor.
+
+Table display, diagnostics, and PowerPoint export share `tableGeometry` and the
+same native cell expansion. Hosts should consume this geometry rather than infer
+cell positions from generated object IDs.
+
+Set `globalThis.AURELIA_VIEWER = true` before loading the editor for a host-managed
+viewer. This disables browser storage and autosave. The host remains responsible
+for its sandbox, content security policy, and editing lock.
 
 Native source associations survive edits to the same text or table element. Exact passage anchors rebase only for a unique exact quote; missing or ambiguous passages downgrade to object scope. Explicit removal/replacement stays authoritative. Save acknowledgements reconcile canonical anchors and origins only against matching submitted content, preserving later typing and Undo/Redo. The hosting service authorizes evidence and validates continuity; retention does not certify semantic support.

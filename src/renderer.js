@@ -1,4 +1,4 @@
-import {color,clamp} from './core.js';
+import {fontFamilyFor,color,clamp} from './core.js';
 /** Ordered retained-scene renderer: analytic GPU shapes + cached, shaped text/image tiles. */
 export const SHAPE_IDS={rect:0,roundRect:1,ellipse:2,triangle:3,diamond:4,arrow:5,star:6,line:7};
 export const GPU_SHADER=`
@@ -39,7 +39,7 @@ fn distance(p:vec2f,h:vec2f,kind:u32,r:f32)->f32 {
 @fragment fn textureFragment(v:Vertex)->@location(0) vec4f {return textureSample(tile,textureSampler,v.local)*items[v.index].transform.z;}
 `;
 export function rgba(value,theme){const c=color(value,theme);if(c==='none')return[0,0,0,0];const h=c.slice(1);return[parseInt(h.slice(0,2),16)/255,parseInt(h.slice(2,4),16)/255,parseInt(h.slice(4,6),16)/255,h.length===8?parseInt(h.slice(6,8),16)/255:1];}
-export function fontCSS(e){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${e.fontFamily||'Arial'}", sans-serif`;}
+export function fontCSS(e,theme='studio'){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${fontFamilyFor(e,theme)}", sans-serif`;}
 export function wrapText(ctx,text,maxWidth){
   const lines=[];maxWidth=Math.max(1,maxWidth);
   for(const para of String(text).replace(/\r\n?/g,'\n').split('\n')){
@@ -54,7 +54,7 @@ export function wrapText(ctx,text,maxWidth){
   }return lines;
 }
 export function drawText2D(ctx,e,theme){
-  ctx.font=fontCSS(e);ctx.textBaseline='alphabetic';ctx.fillStyle=color(e.fill,theme);ctx.textAlign=e.align||'left';
+  ctx.font=fontCSS(e,theme);ctx.textBaseline='alphabetic';ctx.fillStyle=color(e.fill,theme);ctx.textAlign=e.align||'left';
   const pad=e.padding??4,fs=e.fontSize||24,lh=fs*(e.lineHeight||1.2),lines=wrapText(ctx,e.text,e.w-2*pad),height=lines.length*lh;
   let top=pad;if(e.valign==='middle')top=Math.max(pad,(e.h-height)/2);if(e.valign==='bottom')top=Math.max(pad,e.h-height-pad);
   const x=e.align==='center'?e.w/2:e.align==='right'?e.w-pad:pad;
@@ -76,30 +76,36 @@ function childElement(parent,local,id){
   const a=(parent.rotation||0)*Math.PI/180,c=Math.cos(a),s=Math.sin(a),dx=local.x+local.w/2-parent.w/2,dy=local.y+local.h/2-parent.h/2;
   return{opacity:1,stroke:'none',strokeWidth:0,rotation:0,...local,id:parent.id+':'+id,x:parent.x+parent.w/2+dx*c-dy*s-local.w/2,y:parent.y+parent.h/2+dx*s+dy*c-local.h/2,rotation:(parent.rotation||0)+(local.rotation||0),opacity:(parent.opacity??1)*(local.opacity??1)};
 }
+/** Resolved table geometry shared by rendering, measurement and safe formatting. */
+export function tableGeometry(table){
+  const rows=table.cells||[['A','B'],['C','D']],rowCount=rows.length,columnCount=Math.max(1,...rows.map(row=>row.length));
+  const weights=Array.isArray(table.columnWidths)&&table.columnWidths.length===columnCount&&table.columnWidths.every(width=>Number.isFinite(width)&&width>0)?table.columnWidths:Array(columnCount).fill(1);
+  const total=weights.reduce((sum,width)=>sum+width,0),columnWidths=weights.map(width=>table.w*width/total);
+  let offset=0;const columnOffsets=columnWidths.map(width=>{const left=offset;offset+=width;return left;});
+  return {rowCount,columnCount,columnWidths,columnOffsets,rowHeight:table.h/rowCount,paddingX:14,paddingY:8};
+}
 export function expandElement(e){
   const out=[];const add=(v)=>out.push(childElement(e,v,out.length));
-  const txt=(text,x,y,w,h,extra={})=>add({type:'text',text:String(text),x,y,w,h,fontFamily:e.fontFamily||'Arial',fontSize:17,fill:'@muted',padding:0,align:'left',lineHeight:1.2,...extra});
+  const txt=(text,x,y,w,h,extra={})=>add({type:'text',text:String(text),x,y,w,h,fontFamily:e.fontFamily||'Arial',fontRole:e.fontRole,fontSize:18,fill:'@muted',padding:0,align:'left',lineHeight:1.2,...extra});
   if(e.type==='table'){
-    const rows=e.cells||[['A','B'],['C','D']],cols=Math.max(1,...rows.map(r=>r.length)),rh=e.h/rows.length,font=e.fontFamily||'Arial';
-    const weights=Array.isArray(e.columnWidths)&&e.columnWidths.length===cols?e.columnWidths:Array(cols).fill(1),total=weights.reduce((a,b)=>a+b,0)||cols;
-    const widths=weights.map(w=>e.w*w/total),lefts=widths.map((_,c)=>widths.slice(0,c).reduce((a,b)=>a+b,0)),highlighted=new Set(e.highlightRows||[]);
+    const rows=e.cells||[['A','B'],['C','D']],{columnCount:cols,columnWidths:widths,columnOffsets:lefts,rowHeight:rh,paddingX,paddingY}=tableGeometry(e),font=e.fontFamily||'Arial',highlighted=new Set(e.highlightRows||[]);
     rows.forEach((row,r)=>{
       const body=r===0?(e.fill||'@dark'):highlighted.has(r)?'@highlight':e.banded===false?'@bg':(r%2?'@bg':'@line');
       for(let c=0;c<cols;c++){
         add({type:'rect',x:lefts[c],y:r*rh,w:widths[c],h:rh,fill:body,stroke:'@light',strokeWidth:1});
-        txt(row[c]??'',lefts[c]+14,r*rh+8,Math.max(1,widths[c]-28),Math.max(1,rh-16),{fontFamily:font,fontSize:e.fontSize||22,fill:r===0?(e.headerColor||'@light'):'@ink',bold:r===0||highlighted.has(r),valign:'middle',align:e.columnAlign?.[c]||'left'});
+        txt(row[c]??'',lefts[c]+paddingX,r*rh+paddingY,Math.max(1,widths[c]-2*paddingX),Math.max(1,rh-2*paddingY),{fontFamily:font,fontSize:e.fontSize||22,fill:r===0?(e.headerColor||'@light'):'@ink',bold:r===0||highlighted.has(r),valign:'middle',align:e.columnAlign?.[c]||'left',tableCell:{tableId:e.id,row:r,column:c}});
       }
     });return out;
   }
   if(e.type!=='chart'||e.chartType==='donut')return[e];
-  const labels=e.labels||['A','B','C'],values=e.values||[30,50,70],mx=Math.max(1,...values),max=Math.ceil(mx/5)*5,left=54,top=24,right=20,bottom=48,W=Math.max(1,e.w-left-right),H=Math.max(1,e.h-top-bottom),bw=W/Math.max(1,labels.length);
-  for(let i=0;i<=4;i++){const y=top+H-H*i/4;add({type:'line',x:left,y,w:W,h:1,fill:'@line'});txt(Math.round(max*i/4),0,y-10,43,22,{fontSize:14,align:'right'});}
+  const labels=e.labels||['A','B','C'],values=e.values||[30,50,70],mx=Math.max(1,...values),max=Math.ceil(mx/5)*5,left=64,top=28,right=20,bottom=56,W=Math.max(1,e.w-left-right),H=Math.max(1,e.h-top-bottom),bw=W/Math.max(1,labels.length);
+  for(let i=0;i<=4;i++){const y=top+H-H*i/4;add({type:'line',x:left,y,w:W,h:1,fill:'@line'});txt(Math.round(max*i/4),0,y-12,55,24,{fontSize:18,align:'right'});}
   values.forEach((v,i)=>{
     const x=left+i*bw,y=top+H-H*v/max;
     if(e.chartType==='bar')add({type:'roundRect',x:x+bw*.18,y,w:bw*.64,h:Math.max(1,top+H-y),fill:i===(Number.isInteger(e.highlight)?e.highlight:values.length-1)?(e.fill||'@accent'):'@secondary',radius:5});
     else{const cx=x+bw/2;if(i>0){const px=cx-bw,py=top+H-H*values[i-1]/max,dx=cx-px,dy=y-py,len=Math.hypot(dx,dy);add({type:'line',x:(px+cx)/2-len/2,y:(py+y)/2-2,w:len,h:4,rotation:Math.atan2(dy,dx)*180/Math.PI,fill:e.fill||'@accent'});}add({type:'ellipse',x:cx-5,y:y-5,w:10,h:10,fill:e.fill||'@accent'});}
-    if(e.showValues!==false)txt(v,x,y-26,bw,23,{fontSize:16,align:'center',fill:'@ink',bold:true});
-    txt(labels[i]||'',x,top+H+15,bw,30,{fontSize:15,align:'center'});
+    if(e.showValues!==false)txt(v,x,y-27,bw,24,{fontSize:18,align:'center',fill:'@ink',bold:true});
+    txt(labels[i]||'',x,top+H+10,bw,44,{fontSize:18,align:'center'});
   });return out;
 }
 export function flattenScene(elements){return elements.filter(e=>!e.hidden).flatMap(expandElement);}
@@ -111,7 +117,7 @@ export class ImagePool{
 }
 export function drawDonut(ctx,e,theme){
   const values=e.values||[],total=values.reduce((a,b)=>a+b,0)||1,cx=e.w*.35,cy=e.h/2,r=Math.min(e.w*.28,e.h*.4),colors=[e.fill||'@accent','@secondary','@dark','@muted','@line'];let a=-Math.PI/2;
-  values.forEach((v,i)=>{const end=a+v/total*Math.PI*2;ctx.beginPath();ctx.arc(cx,cy,r,a,end);ctx.arc(cx,cy,r*.63,end,a,true);ctx.closePath();ctx.fillStyle=color(colors[i%colors.length],theme);ctx.fill();a=end;ctx.fillRect(e.w*.72,35+i*37,12,12);ctx.font=`16px "${e.fontFamily||'Arial'}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(`${e.labels?.[i]||''}  ${v}`,e.w*.72+22,46+i*37);});ctx.textAlign='center';ctx.font=`bold 42px "${e.fontFamily||'Arial'}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(values.reduce((a,b)=>a+b,0),cx,cy+10);ctx.font=`14px "${e.fontFamily||'Arial'}", sans-serif`;ctx.fillStyle=color('@muted',theme);ctx.fillText('TOTAL',cx,cy+36);
+  values.forEach((v,i)=>{const end=a+v/total*Math.PI*2;ctx.beginPath();ctx.arc(cx,cy,r,a,end);ctx.arc(cx,cy,r*.63,end,a,true);ctx.closePath();ctx.fillStyle=color(colors[i%colors.length],theme);ctx.fill();a=end;ctx.fillRect(e.w*.72,35+i*37,12,12);ctx.font=`16px "${fontFamilyFor(e,theme)}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(`${e.labels?.[i]||''}  ${v}`,e.w*.72+22,46+i*37);});ctx.textAlign='center';ctx.font=`bold 42px "${fontFamilyFor(e,theme)}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(values.reduce((a,b)=>a+b,0),cx,cy+10);ctx.font=`14px "${fontFamilyFor(e,theme)}", sans-serif`;ctx.fillStyle=color('@muted',theme);ctx.fillText('TOTAL',cx,cy+36);
 }
 export function drawLeaf2D(ctx,e,theme,images){
   if(e.hidden)return;ctx.save();ctx.globalAlpha=e.opacity??1;ctx.translate(e.x+e.w/2,e.y+e.h/2);ctx.rotate((e.rotation||0)*Math.PI/180);ctx.translate(-e.w/2,-e.h/2);
@@ -131,7 +137,7 @@ export function paintSlide2D(canvas,slide,doc,images,{scale=1,ignoreId=null}={})
 }
 function tileSignature(e,theme,resolution){
   if(e.type==='image')return `${e.id}|${e.w}|${e.h}|${e.fit}|${e.src.length}|${resolution}`;
-  return JSON.stringify([e.type,e.text,e.w,e.h,e.fill,e.fontSize,e.fontFamily,e.bold,e.italic,e.underline,e.align,e.valign,e.lineHeight,e.padding,e.chartType,e.labels,e.values,theme,resolution]);
+  return JSON.stringify([e.type,e.text,e.w,e.h,e.fill,e.fontSize,e.fontFamily,e.fontRole,e.bold,e.italic,e.underline,e.align,e.valign,e.lineHeight,e.padding,e.chartType,e.labels,e.values,theme,resolution]);
 }
 export class SceneRenderer{
   constructor(canvas,onStatus=()=>{},onInvalidate=()=>{}){
