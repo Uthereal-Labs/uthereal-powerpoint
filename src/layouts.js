@@ -1,4 +1,4 @@
-import {measureComponentText,measurePanel,placePanelText,measureEvidencePoint} from './components.js';
+import {componentTextInset,measureComponentText,measurePanel,placePanelText,measureEvidencePoint} from './components.js';
 /** Adaptive layouts own geometry; ordinary native elements remain the only content source. */
 const LAYOUT_DEFINITIONS={
   process:{collection:'steps',min:2,max:6,slots:{panel_id:'roundRect',number_id:'text',title_id:'text',body_id:'text',connector_id:'arrow'},content:{title:'title_id',body:'body_id'},required:['title']},
@@ -93,7 +93,7 @@ export function createLayouts({makeElement,uid,resolvePresentationStyle,resolveT
     const problem=(reason,detail)=>fit.push({reason,...detail});
     const place=(id,props)=>{const element=get(id);placements.push({id,props:{rotation:0,groupId:component.id,...(element.textRole?resolveTypography(element,style):{}),...props}});};
     const measure=(element,width)=>measureComponentText(element,width,measureText,document.theme);
-    const textBox=(id,x,y,w,h,extra={})=>place(id,{x,y,w:Math.max(1,w),h:Math.max(1,h),padding:0,...extra});
+    const textBox=(id,x,y,w,h,extra={})=>place(id,{x,y,w:Math.max(1,w),h:Math.max(1,h),padding:componentTextInset(get(id)),...extra});
     if(frame.x<0||frame.y<0||frame.w<=0||frame.h<=0||frame.x+frame.w>document.width||frame.y+frame.h>region.footer.y)problem('region_outside_content_area',{available:region.footer.y});
     if(component.title_id){const title=region.title;textBox(component.title_id,title?.x??frame.x,title?.y??style.marginTop*sy,title?.w??frame.w,title?.h??1,{fill:'@ink',hidden:!title});if(title&&title.y<0)problem('title_outside_slide',{});}
     const spacing=style.itemSpacing*sy;

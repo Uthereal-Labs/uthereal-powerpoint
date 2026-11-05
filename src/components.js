@@ -1,9 +1,15 @@
 /** Shared measured components. These return placement data, never duplicated content. */
+// Advance widths omit glyph overhang (for example Georgia bold “A”). Reserve ink
+// room inside each native text box, shared by measurement, renderer and export.
+export const componentTextInset=element=>Math.max(2,Math.ceil(element.fontSize*.15));
 export function measureComponentText(element,width,measureText,theme){
  if(!element.text?.trim())return 0;
- const lines=measureText(element,Math.max(1,width),theme);
+ const inset=componentTextInset(element),lines=measureText(element,Math.max(1,width-2*inset),theme);
  if(!Number.isInteger(lines)||lines<1)throw new Error('Layout text measurement is unavailable.');
- return lines*element.fontSize*element.lineHeight+4;
+ // Tight authored line spacing may overlap lines, but the last line still needs
+ // a complete glyph cell rather than being clipped to the line advance.
+ const lineAdvance=element.fontSize*element.lineHeight,inkHeight=Math.max(lineAdvance,element.fontSize*1.2);
+ return (lines-1)*lineAdvance+inkHeight+2*inset+4;
 }
 export function measurePanel(ids,elements,width,{padding,spacing,leading=0},measure){
  const inner=Math.max(1,width-padding*2),heights=ids.map(id=>measure(elements.get(id),inner)),visible=heights.filter(Boolean).length;

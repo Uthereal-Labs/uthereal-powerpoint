@@ -114,11 +114,17 @@ function captureTypography(element,props){
 
 // ─── src/components.js ───
 /** Shared measured components. These return placement data, never duplicated content. */
+// Advance widths omit glyph overhang (for example Georgia bold “A”). Reserve ink
+// room inside each native text box, shared by measurement, renderer and export.
+const componentTextInset=element=>Math.max(2,Math.ceil(element.fontSize*.15));
 function measureComponentText(element,width,measureText,theme){
  if(!element.text?.trim())return 0;
- const lines=measureText(element,Math.max(1,width),theme);
+ const inset=componentTextInset(element),lines=measureText(element,Math.max(1,width-2*inset),theme);
  if(!Number.isInteger(lines)||lines<1)throw new Error('Layout text measurement is unavailable.');
- return lines*element.fontSize*element.lineHeight+4;
+ // Tight authored line spacing may overlap lines, but the last line still needs
+ // a complete glyph cell rather than being clipped to the line advance.
+ const lineAdvance=element.fontSize*element.lineHeight,inkHeight=Math.max(lineAdvance,element.fontSize*1.2);
+ return (lines-1)*lineAdvance+inkHeight+2*inset+4;
 }
 function measurePanel(ids,elements,width,{padding,spacing,leading=0},measure){
  const inner=Math.max(1,width-padding*2),heights=ids.map(id=>measure(elements.get(id),inner)),visible=heights.filter(Boolean).length;
@@ -226,7 +232,7 @@ function createLayouts({makeElement,uid,resolvePresentationStyle,resolveTypograp
     const problem=(reason,detail)=>fit.push({reason,...detail});
     const place=(id,props)=>{const element=get(id);placements.push({id,props:{rotation:0,groupId:component.id,...(element.textRole?resolveTypography(element,style):{}),...props}});};
     const measure=(element,width)=>measureComponentText(element,width,measureText,document.theme);
-    const textBox=(id,x,y,w,h,extra={})=>place(id,{x,y,w:Math.max(1,w),h:Math.max(1,h),padding:0,...extra});
+    const textBox=(id,x,y,w,h,extra={})=>place(id,{x,y,w:Math.max(1,w),h:Math.max(1,h),padding:componentTextInset(get(id)),...extra});
     if(frame.x<0||frame.y<0||frame.w<=0||frame.h<=0||frame.x+frame.w>document.width||frame.y+frame.h>region.footer.y)problem('region_outside_content_area',{available:region.footer.y});
     if(component.title_id){const title=region.title;textBox(component.title_id,title?.x??frame.x,title?.y??style.marginTop*sy,title?.w??frame.w,title?.h??1,{fill:'@ink',hidden:!title});if(title&&title.y<0)problem('title_outside_slide',{});}
     const spacing=style.itemSpacing*sy;

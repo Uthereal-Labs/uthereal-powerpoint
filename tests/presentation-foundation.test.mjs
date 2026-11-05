@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {layouts,configureLayoutMeasurement,makeDocument,makeElement,validateDocument,Store,THEMES,setPresentationStyle,resolvePresentationStyle,fontFamilyFor,STYLE_FIELDS} from '../src/core.js';
 import {wrapText,flattenScene,fontCSS} from '../src/renderer.js';
 import {exportPPTX,unzipSafe} from '../src/pptx.js';
+import {componentTextInset,measureComponentText} from '../src/components.js';
 import {composeReferencePresentation} from '../src/reference-presentation.js';
 configureLayoutMeasurement((element,width)=>wrapText({measureText:text=>({width:Array.from(text).length*element.fontSize*(element.fontFamily==='Georgia'?.6:.5)})},element.text,width).length);
 const specs={process:{steps:[{title:'Discover',body:'Understand the customer.'},{title:'Deliver',body:'Ship a measured improvement.'}]},comparison:{items:[{title:'Build',body:'Own the workflow.'},{title:'Buy',body:'Adopt an existing workflow.'}]},key_figures:{figures:[{value:'42%',label:'Growth',context:'Measured this quarter.'},{value:'2×',label:'Speed',context:'For this workflow.'}]},takeaway_evidence:{takeaway:'Evidence supports a clear decision.',points:[{text:'Customer adoption grew.'},{text:'Retention improved.'}]}};
@@ -90,4 +91,28 @@ test('replacing a document emits load without a commit or undo entry; undo remai
  assert.deepEqual(previous,JSON.parse(readFileSync(new URL('./fixtures/presentation-v1.json',import.meta.url))));
  const baseline=JSON.stringify(store.doc);events.length=0;store.transaction('Authored edit',()=>store.doc.title='A new title');assert.deepEqual(events,['commit']);store.undo();assert.deepEqual(events,['commit','restore']);assert.equal(JSON.stringify(store.doc),baseline);
  events.length=0;const invalid=structuredClone(previous);invalid.version=99;assert.throws(()=>store.replace(invalid));assert.deepEqual(events,[]);assert.equal(JSON.stringify(store.doc),baseline);
+});
+
+
+test('managed glyph ink has measured inset space for every semantic text role',()=>{
+ for(const type of Object.keys(specs)){
+  const {doc,component,slide}=deck(type),widths=[];
+  configureLayoutMeasurement((text,width)=>{widths.push({id:text.id,width});return wrapText({measureText:value=>({width:Array.from(value).length*text.fontSize*.6})},text.text,width).length;});
+  layouts.update(doc,component.id,{title:'A recommendation that wraps across several lines '.repeat(5)});
+  for(const text of slide.elements.filter(e=>e.type==='text'&&!e.hidden)){
+   assert.equal(text.padding,componentTextInset(text));assert.ok(text.padding>0);
+   const measured=widths.filter(item=>item.id===text.id).at(-1);assert.ok(measured);assert.equal(measured.width,Math.max(1,text.w-text.padding*2));
+   const height=measureComponentText(text,text.w,(element,width)=>wrapText({measureText:value=>({width:Array.from(value).length*element.fontSize*.6})},element.text,width).length,doc.theme);
+   // Number boxes share the tallest measured number across the process row.
+   assert.ok(text.h+.0001>=height,`${type}/${text.textRole}`);
+  }
+ }
+});
+
+
+test('tight line height retains the final glyph cell inside the padded text box',()=>{
+ const text={text:'A recommendation\nwith a descender',fontSize:38,lineHeight:.8};
+ const height=measureComponentText(text,600,()=>2,'studio'),padding=componentTextInset(text);
+ assert.equal(height,38*.8+38*1.2+2*padding+4);
+ assert.ok(height>=2*padding+38*.8+38*1.2);
 });
