@@ -1,4 +1,4 @@
-import {makeElement, elementBounds, rectIntersects} from './core.js';
+import {layouts, makeElement, elementBounds} from './core.js';
 import {wrapText, fontCSS} from './renderer.js';
 
 // This is a display/export projection. It must never be assigned to Store.doc.
@@ -18,19 +18,19 @@ export function composeReferencePresentation(doc, presentation, ctx) {
       item.numbers.some(number=>!entries.has(number)))throw new Error('Invalid reference slide mapping');
     slideNumbers.set(item.slide_id,[...new Set(item.numbers)]);
   }
-  const sx=doc.width/1280,sy=doc.height/720,band=48*sy,margin=48*sx,footerFont=16*sy;
+  const sx=doc.width/1280,sy=doc.height/720,band=layouts.area(doc).footer.h,margin=48*sx,footerFont=16*sy;
   const slides=doc.slides.map(slide=>{
     const numbers=slideNumbers.get(slide.id)||[];
     if(!numbers.length)return slide;
-    const zone={x:0,y:doc.height-band,w:doc.width,h:band};
-    if(slide.elements.some(element=>!element.hidden&&rectIntersects(elementBounds(element),zone)))
-      throw new Error(`Slide "${slide.name}" has content in the bottom 48 px reserved for Sources. Move it up before adding references.`);
+    const zone={x:0,y:layouts.area(doc).footer.y,w:doc.width,h:band};
+    if(slide.elements.some(element=>{if(element.hidden)return false;const bounds=elementBounds(element);return bounds.x<zone.x+zone.w&&bounds.x+bounds.w>zone.x&&bounds.y<zone.y+zone.h&&bounds.y+bounds.h>zone.y;}))
+      throw new Error(`Slide "${slide.name}" has content in the bottom 7% reserved for Sources. Move it up before adding references.`);
     const footer=`Sources: ${numbers.map(number=>`[${number}]`).join(', ')}`;
     ctx.font=`${footerFont}px Arial`;
     if(ctx.measureText(footer).width>doc.width-2*margin)
       throw new Error(`Sources footer does not fit on slide "${slide.name}". Reduce the number of sources on this slide.`);
     const element=makeElement('text',{id:`virtual_source_footer_${slide.id}`,name:'Sources',text:footer,
-      x:margin,y:doc.height-band+9*sy,w:doc.width-2*margin,h:band-12*sy,fontSize:footerFont,
+      x:margin,y:layouts.area(doc).footer.y+9*sy,w:doc.width-2*margin,h:band-12*sy,fontSize:footerFont,
       fill:'@muted',padding:0,locked:true});
     return {...slide,elements:[...slide.elements,element]};
   });
