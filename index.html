@@ -70,6 +70,196 @@ body.dark{--bg:#202623;--panel:#252d28;--panel-alt:#222923;--canvas-bg:#161f1a;-
 (()=>{
 'use strict';
 
+// ─── src/layouts.js ───
+/** Adaptive layouts own geometry; ordinary native elements remain the only content source. */
+const LAYOUT_DEFINITIONS={
+  process:{collection:'steps',min:2,max:6,slots:{panel_id:'roundRect',number_id:'text',title_id:'text',body_id:'text',connector_id:'arrow'},content:{title:'title_id',body:'body_id'},required:['title']},
+  comparison:{collection:'items',min:2,max:2,slots:{panel_id:'roundRect',title_id:'text',body_id:'text'},content:{title:'title_id',body:'body_id'},required:['title']},
+  key_figures:{collection:'figures',min:1,max:4,slots:{panel_id:'roundRect',value_id:'text',label_id:'text',context_id:'text'},content:{value:'value_id',label:'label_id',context:'context_id'},required:['value','label']},
+  takeaway_evidence:{collection:'points',min:1,max:4,slots:{text_id:'text',dot_id:'ellipse'},content:{text:'text_id'},required:['text']},
+};
+const layoutIdentity=value=>typeof value==='string'&&value.length>0&&value.length<=200;
+function definitionFor(type){const definition=Object.hasOwn(LAYOUT_DEFINITIONS,type)?LAYOUT_DEFINITIONS[type]:null;if(!definition)throw new Error('Unsupported adaptive layout type.');return definition;}
+function layoutRows(component){return component[definitionFor(component.type).collection]||[];}
+function componentElementIds(component){
+  const definition=definitionFor(component.type);
+  return [...['title_id','takeaway_id','chart_id'].flatMap(key=>component[key]?[component[key]]:[]),...layoutRows(component).flatMap(row=>Object.keys(definition.slots).map(key=>row[key]))];
+}
+function validateLayoutFrame(frame){
+  if(!frame||!['x','y','w','h'].every(key=>Number.isFinite(frame[key]))||frame.w<=0||frame.h<=0||Object.values(frame).some(value=>Math.abs(value)>100000))throw new Error('Layout frame must have finite positive dimensions.');
+  return {x:frame.x,y:frame.y,w:frame.w,h:frame.h};
+}
+function validateLayoutText(value){if(typeof value!=='string'||value.length>100000)throw new Error('Layout content must be text of at most 100,000 characters.');return value;}
+function validateRowCount(definition,rows,chart=false){
+  if(!Array.isArray(rows)||chart&&rows.length||!chart&&(rows.length<definition.min||rows.length>definition.max))throw new Error(`This layout needs ${definition.min}–${definition.max} ordered items${chart?' or one existing chart':''}.`);
+}
+function validateComponents(raw,elements,seen){
+  if(raw===undefined)return undefined;
+  if(!Array.isArray(raw)||raw.length>100)throw new Error('Invalid adaptive layouts.');
+  const available=new Map(elements.map(element=>[element.id,element])),members=new Set();
+  return raw.map(component=>{
+    if(!component||component.version!==1||!layoutIdentity(component.id)||seen.has(component.id))throw new Error('Invalid adaptive layout identity or version.');
+    const definition=definitionFor(component.type);seen.add(component.id);
+    const frame=validateLayoutFrame(component.frame),chart=component.type==='takeaway_evidence'&&component.chart_id!==undefined;
+    const sourceRows=component[definition.collection];validateRowCount(definition,sourceRows,chart);
+    const claim=(id,type)=>{if(!layoutIdentity(id)||available.get(id)?.type!==type||members.has(id))throw new Error('Invalid or shared layout content slot.');members.add(id);return id;};
+    const rows=sourceRows.map(row=>{
+      if(!row||!layoutIdentity(row.id)||seen.has(row.id))throw new Error('Layout item IDs must be unique.');
+      seen.add(row.id);return {id:row.id,...Object.fromEntries(Object.entries(definition.slots).map(([key,type])=>[key,claim(row[key],type)]))};
+    });
+    const out={id:component.id,type:component.type,version:1,frame,[definition.collection]:rows};
+    if(component.title_id!==undefined)out.title_id=claim(component.title_id,'text');
+    if(component.type==='process'){
+      out.emphasis_step_id=component.emphasis_step_id??null;
+      if(out.emphasis_step_id!==null&&!rows.some(row=>row.id===out.emphasis_step_id))throw new Error('Unknown emphasized process step.');
+    }
+    if(component.type==='takeaway_evidence'){
+      out.takeaway_id=claim(component.takeaway_id,'text');
+      if(chart)out.chart_id=claim(component.chart_id,'chart');
+    }
+    return out;
+  });
+}
+/** Partial copies become ordinary objects; complete copies remap every native slot. */
+function remapComponents(components,idMap,createId,offset=0){
+  return (components||[]).filter(component=>componentElementIds(component).every(id=>idMap.has(id))).map(component=>{
+    const definition=definitionFor(component.type),rows=layoutRows(component),rowMap=new Map(rows.map(row=>[row.id,createId('item')]));
+    const out={...structuredClone(component),id:createId('layout'),frame:{...component.frame,x:component.frame.x+offset,y:component.frame.y+offset},[definition.collection]:rows.map(row=>({id:rowMap.get(row.id),...Object.fromEntries(Object.keys(definition.slots).map(key=>[key,idMap.get(row[key])]))}))};
+    for(const key of ['title_id','takeaway_id','chart_id'])if(component[key])out[key]=idMap.get(component[key]);
+    if(component.type==='process')out.emphasis_step_id=rowMap.get(component.emphasis_step_id)||null;
+    return out;
+  });
+}
+function createLayouts({makeElement,uid,fontFamilyFor,setContent,measureText}){
+  const find=(document,id)=>{for(const slide of document.slides){const component=slide.components?.find(item=>item.id===id);if(component)return {slide,component};}throw new Error(`Unknown layout: ${id}`);};
+  const member=(slide,id)=>slide.components?.find(component=>componentElementIds(component).includes(id))||null;
+  const assertUnlocked=(slide,component)=>{const ids=new Set(componentElementIds(component));if(slide.elements.some(element=>ids.has(element.id)&&element.locked))throw new Error('Unlock layout objects before editing or detaching this layout.');};
+  const assertProperties=(slide,ids,props)=>{
+    const geometryKeys=['x','y','w','h','rotation','groupId'];
+    for(const id of ids){
+      const component=member(slide,id);if(!component)continue;
+      if(Object.keys(props).some(key=>key!=='locked'))assertUnlocked(slide,component);
+      const slot=component.chart_id===id?'chart':layoutRows(component).flatMap(row=>Object.entries(row)).find(([key,value])=>key!=='id'&&value===id)?.[0];
+      const owned=new Set([...geometryKeys,...(component.chart_id!==id?['fill']:[]),...(slide.elements.find(element=>element.id===id)?.type==='text'?['padding']:[]),...(slot==='panel_id'?['radius']:[]),...(['title_id','body_id','value_id','label_id','context_id','connector_id'].includes(slot)?['hidden']:[]),...(slot==='number_id'?['text']:[])]);
+      if(Object.keys(props).some(key=>owned.has(key)))throw new Error('Detach layout before changing its managed geometry or style.');
+    }
+  };
+  const textDefaults=key=>({fontRole:['title_id','value_id','takeaway_id'].includes(key)?'heading':'body',fontSize:({title_id:24,value_id:56,label_id:22,takeaway_id:32,text_id:22})[key]||18,bold:['title_id','value_id','label_id','takeaway_id'].includes(key),text:'',padding:0,fill:'@ink'});
+  const geometry=(document,slide,component)=>{
+    const elements=new Map(slide.elements.map(element=>[element.id,element])),placements=[],{frame}=component,rows=layoutRows(component),sx=document.width/1280,sy=document.height/720;
+    const get=id=>{const element=elements.get(id);if(!element)throw new Error('Adaptive layout has a missing content slot.');return element;};
+    const place=(id,props)=>{get(id);placements.push({id,props:{rotation:0,groupId:component.id,...props}});};
+    const textHeight=(id,width)=>{
+      const element=get(id),fontSize=Math.max(18,element.fontSize||18),fontFamily=fontFamilyFor(element,document.theme),lines=measureText({...element,fontSize,fontFamily},Math.max(1,width),document.theme);
+      if(!Number.isInteger(lines)||lines<1)throw new Error('Layout text measurement is unavailable.');
+      return lines*fontSize*(element.lineHeight||1.2)+4;
+    };
+    const textBox=(id,x,y,w,h,extra={})=>place(id,{x,y,w:Math.max(1,w),h:Math.max(1,h),fontSize:Math.max(18,get(id).fontSize||18),padding:0,...extra});
+    let overflow=frame.x<0||frame.y<0||frame.x+frame.w>document.width||frame.y+frame.h>document.height-48*sy;
+    if(component.title_id){
+      const y=frame.y-126*sy,height=textHeight(component.title_id,frame.w);
+      textBox(component.title_id,frame.x,y,frame.w,height,{fill:'@ink'});
+      overflow||=y<0||y+height+24>frame.y;
+    }
+    if(component.type==='takeaway_evidence'){
+      const takeawayHeight=textHeight(component.takeaway_id,frame.w),contentY=frame.y+takeawayHeight+24;
+      textBox(component.takeaway_id,frame.x,frame.y,frame.w,takeawayHeight,{fill:'@ink'});
+      if(component.chart_id){
+        const height=frame.h-takeawayHeight-24;
+        place(component.chart_id,{x:frame.x,y:contentY,w:frame.w,h:Math.max(1,height)});
+        overflow||=frame.w<520*sx||height<300*sy;
+      }else{
+        let y=contentY;
+        for(const row of rows){const height=textHeight(row.text_id,frame.w-28);textBox(row.text_id,frame.x+28,y,frame.w-28,height,{fill:'@ink'});place(row.dot_id,{x:frame.x+2,y:y+9,w:8,h:8,fill:'@accent'});y+=height+20;}
+        overflow||=y-20>frame.y+frame.h;
+      }
+    }else{
+      const gap=component.type==='process'?32:24,padding=20,width=(frame.w-gap*(rows.length-1))/rows.length,inner=Math.max(1,width-2*padding);
+      const slots=component.type==='key_figures'?['value_id','label_id','context_id']:component.type==='process'?['title_id','body_id']:['title_id','body_id'];
+      const metrics=rows.map(row=>slots.map(key=>get(row[key]).text?textHeight(row[key],inner):0));
+      const headingOffset=component.type==='process'?34:0;
+      const height=Math.max(component.type==='comparison'?220:160,...metrics.map(heights=>2*padding+headingOffset+heights.reduce((total,value)=>total+value,0)+Math.max(0,heights.filter(Boolean).length-1)*10));
+      rows.forEach((row,index)=>{
+        const x=frame.x+index*(width+gap),y=frame.y,emphasized=row.id===component.emphasis_step_id;
+        place(row.panel_id,{x,y,w:Math.max(1,width),h:height,fill:emphasized?'@dark':'@surface',radius:12});
+        if(component.type==='process')textBox(row.number_id,x+padding,y+padding,inner,22,{text:String(index+1),fontSize:18,fill:emphasized?'@light':'@ink'});
+        let textY=y+padding+headingOffset;
+        slots.forEach((key,slotIndex)=>{const value=get(row[key]).text,height=metrics[index][slotIndex];textBox(row[key],x+padding,textY,inner,height,{fill:emphasized?'@light':'@ink',hidden:!value});if(value)textY+=height+10;});
+        if(component.type==='process')place(row.connector_id,{x:x+width+6,y:y+height/2-8,w:gap-12,h:16,fill:'@accent',hidden:index===rows.length-1});
+      });
+      overflow||=width<2*padding+18||height>frame.h;
+    }
+    return {placements,overflow};
+  };
+  const normalize=document=>{
+    const diagnostics=[];
+    for(const slide of document.slides)for(const component of slide.components||[]){
+      const {placements,overflow}=geometry(document,slide,component),elements=new Map(slide.elements.map(element=>[element.id,element]));
+      for(const placement of placements)Object.assign(elements.get(placement.id),placement.props);
+      if(overflow)diagnostics.push({component_id:component.id,slide_id:slide.id,kind:'layout_overflow',message:'Layout content does not fit its reserved area. Shorten text, reduce items, or enlarge the layout; all text is retained.'});
+    }
+    return diagnostics;
+  };
+  const update=(document,id,input={})=>{
+    const {slide,component}=find(document,id),definition=definitionFor(component.type),previousRows=layoutRows(component),previous=new Map(previousRows.map(row=>[row.id,row]));
+    assertUnlocked(slide,component);
+    const allowed=new Set(['type','title','frame',definition.collection,...(component.type==='process'?['emphasis_step_id']:[]),...(component.type==='takeaway_evidence'?['takeaway','chart_id']:[])]);
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!allowed.has(key))||input.type!==undefined&&input.type!==component.type)throw new Error('Use only content fields for this layout type.');
+    if(component.type==='takeaway_evidence'&&!component.takeaway_id&&(typeof input.takeaway!=='string'||!input.takeaway.trim()))throw new Error('A new takeaway layout requires a nonempty takeaway.');
+    const chart=component.type==='takeaway_evidence'&&(input.chart_id!==undefined||component.chart_id!==undefined);
+    if(component.type==='takeaway_evidence'&&(input.points!==undefined&&chart||input.chart_id!==undefined&&previousRows.length))throw new Error('Detach layout before switching between points and chart evidence.');
+    if(component.chart_id&&input.chart_id!==undefined&&input.chart_id!==component.chart_id)throw new Error('Detach layout before replacing its evidence chart.');
+    const specs=input[definition.collection]??previousRows.map(row=>({id:row.id}));validateRowCount(definition,specs,chart);
+    if(specs.some(spec=>!spec||typeof spec!=='object'||Array.isArray(spec)))throw new Error('Layout items must be content objects.');
+    const occupiedIds=new Set([document.id,...document.slides.flatMap(item=>[item.id,...item.elements.map(element=>element.id),...(item.components||[]).flatMap(value=>[value.id,...layoutRows(value).map(row=>row.id)])])]);
+    const requestedIds=specs.filter(spec=>spec.id!==undefined).map(spec=>spec.id);
+    if(new Set(requestedIds).size!==requestedIds.length||requestedIds.some(itemId=>!layoutIdentity(itemId)||!previous.has(itemId)&&occupiedIds.has(itemId)))throw new Error('Invalid or duplicate layout item ID.');
+    for(const spec of specs){
+      if(Object.keys(spec).some(key=>key!=='id'&&!Object.hasOwn(definition.content,key)))throw new Error('Unknown layout item content field.');
+      for(const field of Object.keys(definition.content))if(spec[field]!==undefined)validateLayoutText(spec[field]);
+      if(!previous.has(spec.id))for(const field of definition.required)if(typeof spec[field]!=='string'||!spec[field].trim())throw new Error(`New layout items require nonempty ${field}.`);
+    }
+    if(input.title!==undefined)validateLayoutText(input.title);
+    if(input.takeaway!==undefined)validateLayoutText(input.takeaway);
+    if(input.frame!==undefined)validateLayoutFrame(input.frame);
+    if(chart){const chartId=input.chart_id??component.chart_id,existing=slide.elements.find(element=>element.id===chartId),owner=member(slide,chartId);if(existing?.locked)throw new Error('Unlock the chart before using it in an adaptive layout.');if(existing?.type!=='chart'||owner&&owner!==component)throw new Error('Evidence must reference an available chart on this slide.');component.chart_id=chartId;}
+    const elements=new Map(slide.elements.map(element=>[element.id,element]));
+    const createText=(name,key,text)=>{const element=makeElement('text',{name,...textDefaults(key),text});slide.elements.push(element);elements.set(element.id,element);return element.id;};
+    if(input.title!==undefined){if(!component.title_id){component.title_id=createText('Layout title','title_id',input.title);elements.get(component.title_id).fontSize=38;}else setContent(elements.get(component.title_id),{text:input.title});}
+    if(component.type==='takeaway_evidence'){if(!component.takeaway_id)component.takeaway_id=createText('Takeaway','takeaway_id',input.takeaway??'');else if(input.takeaway!==undefined)setContent(elements.get(component.takeaway_id),{text:input.takeaway});}
+    const next=specs.map(spec=>{
+      let row=previous.get(spec.id);
+      if(!row){row={id:spec.id||uid('item')};for(const [key,type]of Object.entries(definition.slots)){const element=makeElement(type,{name:`${component.type} ${key.replace('_id','')}`,...(type==='text'?textDefaults(key):{})});row[key]=element.id;slide.elements.push(element);elements.set(element.id,element);}}
+      for(const [field,key]of Object.entries(definition.content))if(spec[field]!==undefined)setContent(elements.get(row[key]),{text:spec[field]});
+      return row;
+    });
+    const retained=new Set(next.map(row=>row.id)),removed=new Set(previousRows.filter(row=>!retained.has(row.id)).flatMap(row=>Object.keys(definition.slots).map(key=>row[key])));
+    slide.elements=slide.elements.filter(element=>!removed.has(element.id));component[definition.collection]=next;
+    if(input.frame!==undefined)component.frame=validateLayoutFrame(input.frame);
+    if(component.type==='process'){
+      if(input.emphasis_step_id!==undefined){if(input.emphasis_step_id!==null&&!next.some(row=>row.id===input.emphasis_step_id))throw new Error('Unknown emphasized process step.');component.emphasis_step_id=input.emphasis_step_id;}
+      if(!next.some(row=>row.id===component.emphasis_step_id))component.emphasis_step_id=null;
+    }
+    normalize(document);return component;
+  };
+  return {
+    create(document,slideId,input){
+      const definition=definitionFor(input?.type),slide=document.slides.find(item=>item.id===slideId);if(!slide)throw new Error('Unknown layout slide.');
+      const sx=document.width/1280,sy=document.height/720,component={id:uid('layout'),type:input.type,version:1,frame:validateLayoutFrame(input.frame||{x:72*sx,y:190*sy,w:1136*sx,h:440*sy}),[definition.collection]:[],...(input.type==='process'?{emphasis_step_id:null}:{})};
+      (slide.components??=[]).push(component);return update(document,component.id,input);
+    },
+    update,
+    detach(document,id){const {slide,component}=find(document,id);assertUnlocked(slide,component);slide.components=slide.components.filter(item=>item!==component);for(const element of slide.elements)if(element.groupId===id)element.groupId=null;if(!slide.components.length)delete slide.components;return component;},
+    normalize,
+    inspect(document){return document.slides.flatMap(slide=>(slide.components||[]).map(component=>({...structuredClone(component),slide_id:slide.id,overflow:geometry(document,slide,component).overflow})));},
+    member,
+    assertProperties,
+    elementIds:componentElementIds,
+    assertFreeform(slide,ids){if(ids.some(id=>member(slide,id)))throw new Error('Detach layout before changing its objects or geometry.');},
+  };
+}
+
+
 // ─── src/core.js ───
 /** Aurelia document/geometry/command kernel. No browser or renderer dependencies. */
 const VERSION = 1;
@@ -92,6 +282,10 @@ const clone = value => structuredClone(value);
 const uid = (prefix='e') => `${prefix}_${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)+Date.now().toString(36)}`;
 const clamp = (n,a,b) => Math.max(a,Math.min(b,n));
 const color = (value,theme='studio') => value?.startsWith('@') ? ((THEME_COLOR_TOKENS.includes(value.slice(1))&&THEMES[theme]?.[value.slice(1)]) || '#17313A') : (value || '#000000');
+const fontFamilyFor=(element,theme='studio')=>element.fontRole==='heading'?(THEMES[theme]?.headingFont||'Arial'):element.fontRole==='body'?(THEMES[theme]?.bodyFont||'Arial'):(element.fontFamily||'Arial');
+let layoutTextMeasurer=null;
+function configureLayoutMeasurement(measure){if(typeof measure!=='function')throw new Error('A text measurer is required.');layoutTextMeasurer=measure;}
+const layouts=createLayouts({makeElement,uid,fontFamilyFor,setContent:updateElementContent,measureText:(...args)=>{if(!layoutTextMeasurer)throw new Error('Adaptive layout text measurement is unavailable.');return layoutTextMeasurer(...args);}});
 const escapeHTML = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function makeElement(type='rect', props={}) {
   return { id:uid(), type, name:({text:'Text box',rect:'Rectangle',roundRect:'Rounded rectangle',ellipse:'Ellipse',line:'Line',triangle:'Triangle',diamond:'Diamond',arrow:'Arrow',star:'Star',image:'Picture',chart:'Chart',table:'Table'})[type]||type,
@@ -100,13 +294,13 @@ function makeElement(type='rect', props={}) {
 }
 function makeSlide(layout='blank', theme='studio') {
   const s={id:uid('s'),name:layout==='blank'?'Blank slide':'Untitled slide',bg:'@bg',notes:'',transition:'fade',duration:0.45,elements:[]};
-  if(layout==='title') s.elements=[makeElement('text',{name:'Title',x:88,y:215,w:1100,h:160,text:'A new perspective.',fontSize:92,bold:true}),makeElement('text',{name:'Subtitle',x:94,y:415,w:1000,h:80,text:'An idea worth sharing.',fontSize:28,fill:'@muted'})];
+  if(layout==='title') s.elements=[makeElement('text',{name:'Title',fontRole:'heading',x:88,y:215,w:1100,h:160,text:'A new perspective.',fontSize:92,bold:true}),makeElement('text',{name:'Subtitle',fontRole:'body',x:94,y:415,w:1000,h:80,text:'An idea worth sharing.',fontSize:28,fill:'@muted'})];
   if(layout==='content'||layout==='split') {
-    s.elements.push(makeElement('text',{name:'Title',x:78,y:65,w:1110,h:100,text:'Make your point.',fontSize:62,bold:true}));
-    s.elements.push(makeElement('text',{name:'Content',x:82,y:225,w:layout==='split'?515:1100,h:385,text:'Start with what matters.\n\nConnect the dots.\n\nGive your audience a reason to care.',fontSize:31,fill:'@muted'}));
+    s.elements.push(makeElement('text',{name:'Title',fontRole:'heading',x:78,y:65,w:1110,h:100,text:'Make your point.',fontSize:62,bold:true}));
+    s.elements.push(makeElement('text',{name:'Content',fontRole:'body',x:82,y:225,w:layout==='split'?515:1100,h:385,text:'Start with what matters.\n\nConnect the dots.\n\nGive your audience a reason to care.',fontSize:31,fill:'@muted'}));
     if(layout==='split')s.elements.push(makeElement('roundRect',{name:'Visual',x:660,y:222,w:530,h:380,fill:'@secondary',radius:24}));
   }
-  if(layout==='quote') s.elements=[makeElement('text',{x:90,y:110,w:180,h:180,text:'“',fontSize:180,fill:'@accent',fontFamily:'Georgia'}),makeElement('text',{name:'Quote',x:120,y:270,w:1000,h:240,text:'Great stories make\ncomplex ideas feel simple.',fontSize:64,fontFamily:'Georgia'}),makeElement('text',{x:125,y:570,w:700,h:50,text:'YOUR NAME  /  YOUR PERSPECTIVE',fontSize:18,fill:'@muted'})];
+  if(layout==='quote') s.elements=[makeElement('text',{x:90,y:110,w:180,h:180,text:'“',fontRole:'heading',fontSize:180,fill:'@accent',fontFamily:'Georgia'}),makeElement('text',{name:'Quote',fontRole:'heading',x:120,y:270,w:1000,h:240,text:'Great stories make\ncomplex ideas feel simple.',fontSize:64,fontFamily:'Georgia'}),makeElement('text',{x:125,y:570,w:700,h:50,text:'YOUR NAME  /  YOUR PERSPECTIVE',fontRole:'body',fontSize:18,fill:'@muted'})];
   return s;
 }
 function makeDocument() { return {format:'aurelia',version:VERSION,grounding_contract:GROUNDING_CONTRACT,id:uid('deck'),title:'Untitled presentation',width:1280,height:720,theme:'studio',slides:[makeSlide('title')]}; }
@@ -177,6 +371,7 @@ function continueGrounding(element) {
   });
   return validateGrounding(element,annotations);
 }
+function updateElementContent(element,props){const before=contentSignature(element);Object.assign(element,props);if('fontFamily'in props&&!('fontRole'in props))delete element.fontRole;if(contentSignature(element)!==before)element.grounding=continueGrounding(element);}
 function validateGrounding(element, annotations, seen=new Set()) {
   if(!Array.isArray(annotations)||annotations.length>2000)throw new Error('Invalid grounding annotations.');
   if(annotations.length&&!['text','table'].includes(element.type))throw new Error('Only text and table objects can contain grounding.');
@@ -198,19 +393,25 @@ function stripGrounding(doc,{keepContract=false}={}) {
   for(const slide of out.slides)for(const element of slide.elements){if(keepContract)element.grounding=[];else delete element.grounding;}
   return out;
 }
-function copyElements(elements,{retainGrounding=true,offset=0,unlock=false}={}) {
+function copyElements(elements,{retainGrounding=true,offset=0,unlock=false,idMap=null}={}) {
   const groups=new Map();return clone(elements).map(element=>{
-    element.id=uid();element.x+=offset;element.y+=offset;if(unlock)element.locked=false;
+    const previousId=element.id;element.id=uid();if(idMap)idMap.set(previousId,element.id);element.x+=offset;element.y+=offset;if(unlock)element.locked=false;
     element.grounding=retainGrounding?(element.grounding||[]).map(annotation=>({...annotation,id:uid('a')})):[];
     if(element.groupId){if(!groups.has(element.groupId))groups.set(element.groupId,uid('g'));element.groupId=groups.get(element.groupId);}
     return element;
   });
 }
+function copySlide(slide,{retainGrounding=true,offset=0}={}){
+  const idMap=new Map(),elements=copyElements(slide.elements,{retainGrounding,offset,idMap}),out={...clone(slide),id:uid('s'),elements};
+  if(slide.components)out.components=remapComponents(slide.components,idMap,uid,offset);
+  for(const component of out.components||[])for(const element of elements)if(componentElementIds(component).includes(element.id))element.groupId=component.id;
+  return out;
+}
 // External files are content imports. No submitted evidence association is trusted.
 function importExternalDocument(raw) {
   const out=clone(raw);out.grounding_contract=GROUNDING_CONTRACT;out.id=uid('deck');
   if(!Array.isArray(out.slides))throw new Error('Invalid presentation slides.');
-  out.slides=out.slides.map(slide=>({...slide,id:uid('s'),elements:copyElements(slide.elements,{retainGrounding:false})}));
+  out.slides=out.slides.map(slide=>copySlide(slide,{retainGrounding:false}));
   return validateDocument(out);
 }
 const VALID_TYPES=new Set(['rect','roundRect','ellipse','triangle','diamond','arrow','star','line','text','image','chart','table']);
@@ -223,7 +424,7 @@ function validateDataStyle(e,v){
 }
 function validateTableStyle(e,v){
   const cols=Math.max(1,...e.cells.map(r=>r.length));
-  if(Array.isArray(v.columnWidths)&&v.columnWidths.length===cols&&v.columnWidths.every(w=>Number.isFinite(+w)&&+w>0))e.columnWidths=v.columnWidths.map(w=>clamp(+w,0.01,1000));
+  if(Array.isArray(v.columnWidths)&&v.columnWidths.length===cols&&v.columnWidths.every(w=>Number.isFinite(+w)&&+w>0)){const max=Math.max(...v.columnWidths.map(Number));e.columnWidths=v.columnWidths.map(w=>max>1000?Math.max(Number.MIN_VALUE,+w/max*1000):+w);}
   if(Array.isArray(v.columnAlign)&&v.columnAlign.length===cols)e.columnAlign=v.columnAlign.map(a=>['left','center','right'].includes(a)?a:'left');
   if(Array.isArray(v.highlightRows))e.highlightRows=[...new Set(v.highlightRows.filter(r=>Number.isInteger(r)&&r>0&&r<e.cells.length))].sort((a,b)=>a-b);
   if(typeof v.banded==='boolean')e.banded=v.banded;
@@ -250,8 +451,11 @@ function validateDocument(raw) {
       if(e.type==='image'){if(typeof v.src!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v.src)||v.src.length>30000000)throw new Error('Pictures must be embedded PNG, JPEG or WebP files, at most 22 MB each.');e.src=v.src;e.fit=v.fit==='contain'?'contain':'cover';}
       if(e.type==='chart'){validateDataStyle(e,v);e.chartType=['bar','line','donut'].includes(v.chartType)?v.chartType:'bar';e.labels=(v.labels||['A','B','C']).slice(0,30).map(x=>String(x).slice(0,80));e.values=(v.values||[20,40,70]).slice(0,e.labels.length).map(x=>clamp(Number(x)||0,0,1e12));while(e.values.length<e.labels.length)e.values.push(0);e.showValues=v.showValues!==false;}
       if(e.type==='table'){if(!Array.isArray(v.cells)||!v.cells.length)throw new Error('Invalid table.');e.cells=v.cells.slice(0,30).map(r=>Array.isArray(r)?r.slice(0,12).map(c=>String(c).slice(0,1000)):['']);e.fontSize=clamp(+v.fontSize||22,8,100);validateDataStyle(e,v);validateTableStyle(e,v);}
+      if(['text','table','chart'].includes(e.type)&&['heading','body'].includes(v.fontRole))e.fontRole=v.fontRole;
       e.grounding=validateGrounding(e,v.grounding,annotationsSeen);return e;
-    });return out;
+    });
+    if(s.components!==undefined)out.components=validateComponents(s.components,out.elements,seen);
+    return out;
   });return d;
 }
 function localPoint(e,p) {
@@ -292,7 +496,7 @@ class Store {
   activate(id){if(!this.doc.slides.some(s=>s.id===id))return;this.active=id;this.selection.clear();this.emit('active');}
   snapshot(){return JSON.stringify({doc:this.doc,active:this.active});}
   begin(label='Edit'){if(!this.pending)this.pending={label,before:this.snapshot(),groundingAssignments:new Set()};}
-  commit(){if(!this.pending)return false;const {label,before,groundingAssignments}=this.pending;
+  commit(){if(!this.pending)return false;layouts.normalize(this.doc);const {label,before,groundingAssignments}=this.pending;
     const previous=new Map(JSON.parse(before).doc.slides.flatMap(slide=>slide.elements).map(element=>[element.id,element]));
     for(const element of this.doc.slides.flatMap(slide=>slide.elements)){
       const original=previous.get(element.id);
@@ -304,8 +508,8 @@ class Store {
   restore(snapshot){const state=JSON.parse(snapshot);this.doc=state.doc;this.active=state.active;this.selection=new Set([...this.selection].filter(id=>this.slide.elements.some(e=>e.id===id)));this.revision++;this.emit('restore');}
   undo(){if(this.pending)this.commit();const cmd=this.past.pop();if(!cmd)return;this.future.push(cmd);this.restore(cmd.before);}
   redo(){const cmd=this.future.pop();if(!cmd)return;this.past.push(cmd);this.restore(cmd.after);}
-  replace(doc){this.doc=validateDocument(doc);this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('restore');}
-  setElementContent(element,props){const before=contentSignature(element);Object.assign(element,props);if(contentSignature(element)!==before)element.grounding=continueGrounding(element);}
+  replace(doc){const validated=validateDocument(doc);layouts.normalize(validated);this.doc=validated;this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('restore');}
+  setElementContent(element,props,document=this.doc){const slide=document.slides.find(item=>item.elements.some(value=>value.id===element.id));if(!slide)throw new Error('Unknown content element.');layouts.assertProperties(slide,[element.id],props);if(element.locked)throw new Error('Element is locked');updateElementContent(element,props);layouts.normalize(document);}
   normalizeGrounding(document){for(const element of document.slides.flatMap(slide=>slide.elements))element.grounding=continueGrounding(element);return document;}
   inspectGrounding(objectIds=null){
     if(objectIds!==null&&(!Array.isArray(objectIds)||objectIds.some(id=>!validIdentity(id))))throw new Error('Invalid grounding target IDs.');
@@ -326,24 +530,33 @@ class Store {
     if(this.pending)apply();else this.transaction('Assign grounding',apply);
     return {assigned:validated.length};
   }
+  #copySelectionElements(selected){
+    const ids=new Set(selected.map(element=>element.id)),elements=new Map(this.slide.elements.map(element=>[element.id,element]));
+    for(const component of this.slide.components||[]){
+      const members=componentElementIds(component),visible=members.filter(id=>!elements.get(id).hidden);
+      if(visible.length&&visible.every(id=>ids.has(id)))for(const id of members)ids.add(id);
+    }
+    return this.slide.elements.filter(element=>ids.has(element.id));
+  }
   copySelected(){
-    this.clipboard={handle:uid('clip'),artifact_id:this.doc.id,elements:clone(this.selected)};
+    const elements=this.#copySelectionElements(this.selected),selectedIds=new Set(elements.map(element=>element.id));
+    this.clipboard={handle:uid('clip'),artifact_id:this.doc.id,elements:clone(elements),components:clone((this.slide.components||[]).filter(component=>componentElementIds(component).every(id=>selectedIds.has(id))))};
     // The public record contains content only. The opaque handle can recover the
     // native record exclusively in this editor and artifact.
-    return JSON.stringify({handle:this.clipboard.handle,elements:this.clipboard.elements.map(element=>{const out=clone(element);delete out.grounding;return out;})});
+    return JSON.stringify({handle:this.clipboard.handle,components:this.clipboard.components,elements:this.clipboard.elements.map(element=>{const out=clone(element);delete out.grounding;return out;})});
   }
   pasteObjects(payload=null){
     let record=this.clipboard,retainGrounding=record?.artifact_id===this.doc.id;
     if(payload!==null){
       const raw=JSON.parse(payload),handle=Array.isArray(raw)?null:raw.handle;
       if(!record||handle!==record.handle||!retainGrounding){
-        const temp=makeDocument();temp.slides[0].elements=(Array.isArray(raw)?raw:raw.elements).map(element=>({...element,grounding:[]}));
-        record={elements:importExternalDocument(temp).slides[0].elements};retainGrounding=false;
+        const temp=makeDocument();temp.slides[0].elements=(Array.isArray(raw)?raw:raw.elements).map(element=>({...element,grounding:[]}));if(raw.components)temp.slides[0].components=raw.components;
+        record=importExternalDocument(temp).slides[0];retainGrounding=false;
       }
     }
     if(!record?.elements.length)return [];
-    const elements=copyElements(record.elements,{retainGrounding,offset:28,unlock:true});
-    this.transaction('Paste objects',()=>this.slide.elements.push(...elements));this.select(elements.map(element=>element.id));return elements;
+    const idMap=new Map(),elements=copyElements(record.elements,{retainGrounding,offset:28,unlock:true,idMap}),components=remapComponents(record.components,idMap,uid,28);
+    this.transaction('Paste objects',()=>{this.slide.elements.push(...elements);if(components.length)(this.slide.components??=[]).push(...components);});this.select(elements.map(element=>element.id));return elements;
   }
   ackGrounding({receipts=[],invalidations=[],submitted_snapshot=null}={}){
     const normalized=[...receipts.map(receipt=>({...receipt,origin:validateGroundingOrigin(receipt.origin)})),...invalidations.map(invalidation=>({...invalidation,invalidated:true}))].map(item=>{
@@ -383,15 +596,15 @@ class Store {
     if(updated)this.emit('grounding');return {updated};
   }
   add(element){this.transaction(`Insert ${element.type}`,()=>this.slide.elements.push(element));this.select([element.id]);return element;}
-  updateSelected(props,label='Format objects'){this.transaction(label,()=>{for(const e of this.selected)if(!e.locked)Object.assign(e,props);});}
-  deleteSelected(){this.transaction('Delete objects',()=>{this.slide.elements=this.slide.elements.filter(e=>!this.selection.has(e.id)||e.locked);});this.select([]);}
-  duplicateSelected(){const els=copyElements(this.selected.filter(e=>!e.locked),{offset:24});this.transaction('Duplicate objects',()=>this.slide.elements.push(...els));this.select(els.map(e=>e.id));}
+  updateSelected(props,label='Format objects'){layouts.assertProperties(this.slide,this.selected.map(element=>element.id),props);this.transaction(label,()=>{for(const e of this.selected)if(!e.locked){Object.assign(e,props);if('fontFamily'in props&&!('fontRole'in props))delete e.fontRole;}});}
+  deleteSelected(){layouts.assertFreeform(this.slide,this.selected.map(element=>element.id));this.transaction('Delete objects',()=>{this.slide.elements=this.slide.elements.filter(e=>!this.selection.has(e.id)||e.locked);});this.select([]);}
+  duplicateSelected(){const idMap=new Map(),els=copyElements(this.#copySelectionElements(this.selected.filter(e=>!e.locked)),{offset:24,idMap}),components=remapComponents(this.slide.components,idMap,uid,24);this.transaction('Duplicate objects',()=>{this.slide.elements.push(...els);if(components.length)(this.slide.components??=[]).push(...components);});this.select(els.map(e=>e.id));}
   addSlide(layout='blank'){const s=makeSlide(layout,this.doc.theme);this.transaction('New slide',()=>{const i=this.doc.slides.findIndex(s=>s.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);return s;}
-  duplicateSlide(){const s=clone(this.slide);s.id=uid('s');s.name+=' copy';s.elements=copyElements(s.elements);this.transaction('Duplicate slide',()=>{const i=this.doc.slides.findIndex(x=>x.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);}
+  duplicateSlide(){const s=copySlide(this.slide);s.name+=' copy';this.transaction('Duplicate slide',()=>{const i=this.doc.slides.findIndex(x=>x.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);}
   deleteSlide(){if(this.doc.slides.length===1)return false;this.transaction('Delete slide',()=>{const i=this.doc.slides.findIndex(s=>s.id===this.active);this.doc.slides.splice(i,1);this.active=this.doc.slides[Math.min(i,this.doc.slides.length-1)].id;});this.select([]);return true;}
   reorderSlide(from,to){this.transaction('Reorder slides',()=>{const [slide]=this.doc.slides.splice(from,1);this.doc.slides.splice(to,0,slide);});}
-  align(mode){const els=this.selected.filter(e=>!e.locked);if(!els.length)return;const b=els.length===1?{x:0,y:0,w:this.doc.width,h:this.doc.height}:unionBounds(els);this.transaction('Align objects',()=>{for(const e of els){const r=elementBounds(e);if(mode==='left')e.x+=b.x-r.x;if(mode==='center')e.x+=b.x+b.w/2-r.x-r.w/2;if(mode==='right')e.x+=b.x+b.w-r.x-r.w;if(mode==='top')e.y+=b.y-r.y;if(mode==='middle')e.y+=b.y+b.h/2-r.y-r.h/2;if(mode==='bottom')e.y+=b.y+b.h-r.y-r.h;}});}
-  distribute(axis){const es=this.selected.filter(e=>!e.locked).sort((a,b)=>elementBounds(a)[axis]-elementBounds(b)[axis]);if(es.length<3)return;const k=axis==='x'?'w':'h',bs=es.map(elementBounds),total=bs.reduce((n,b)=>n+b[k],0),gap=(bs.at(-1)[axis]+bs.at(-1)[k]-bs[0][axis]-total)/(es.length-1);this.transaction('Distribute objects',()=>{let p=bs[0][axis];es.forEach((e,i)=>{e[axis]+=p-bs[i][axis];p+=bs[i][k]+gap;});});}
+  align(mode){layouts.assertFreeform(this.slide,this.selected.map(element=>element.id));const els=this.selected.filter(e=>!e.locked);if(!els.length)return;const b=els.length===1?{x:0,y:0,w:this.doc.width,h:this.doc.height}:unionBounds(els);this.transaction('Align objects',()=>{for(const e of els){const r=elementBounds(e);if(mode==='left')e.x+=b.x-r.x;if(mode==='center')e.x+=b.x+b.w/2-r.x-r.w/2;if(mode==='right')e.x+=b.x+b.w-r.x-r.w;if(mode==='top')e.y+=b.y-r.y;if(mode==='middle')e.y+=b.y+b.h/2-r.y-r.h/2;if(mode==='bottom')e.y+=b.y+b.h-r.y-r.h;}});}
+  distribute(axis){layouts.assertFreeform(this.slide,this.selected.map(element=>element.id));const es=this.selected.filter(e=>!e.locked).sort((a,b)=>elementBounds(a)[axis]-elementBounds(b)[axis]);if(es.length<3)return;const k=axis==='x'?'w':'h',bs=es.map(elementBounds),total=bs.reduce((n,b)=>n+b[k],0),gap=(bs.at(-1)[axis]+bs.at(-1)[k]-bs[0][axis]-total)/(es.length-1);this.transaction('Distribute objects',()=>{let p=bs[0][axis];es.forEach((e,i)=>{e[axis]+=p-bs[i][axis];p+=bs[i][k]+gap;});});}
   arrange(mode){this.transaction('Arrange objects',()=>{const list=this.slide.elements,chosen=list.filter(e=>this.selection.has(e.id));if(mode==='front')this.slide.elements=[...list.filter(e=>!this.selection.has(e.id)),...chosen];else if(mode==='back')this.slide.elements=[...chosen,...list.filter(e=>!this.selection.has(e.id))];else if(mode==='forward'){for(let i=list.length-2;i>=0;i--)if(this.selection.has(list[i].id)&&!this.selection.has(list[i+1].id))[list[i],list[i+1]]=[list[i+1],list[i]];}else{for(let i=1;i<list.length;i++)if(this.selection.has(list[i].id)&&!this.selection.has(list[i-1].id))[list[i],list[i-1]]=[list[i-1],list[i]];}});}
   group(){if(this.selected.length<2)return;this.updateSelected({groupId:uid('g')},'Group objects');}
   ungroup(){this.updateSelected({groupId:null},'Ungroup objects');}
@@ -439,7 +652,7 @@ fn distance(p:vec2f,h:vec2f,kind:u32,r:f32)->f32 {
 @fragment fn textureFragment(v:Vertex)->@location(0) vec4f {return textureSample(tile,textureSampler,v.local)*items[v.index].transform.z;}
 `;
 function rgba(value,theme){const c=color(value,theme);if(c==='none')return[0,0,0,0];const h=c.slice(1);return[parseInt(h.slice(0,2),16)/255,parseInt(h.slice(2,4),16)/255,parseInt(h.slice(4,6),16)/255,h.length===8?parseInt(h.slice(6,8),16)/255:1];}
-function fontCSS(e){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${e.fontFamily||'Arial'}", sans-serif`;}
+function fontCSS(e,theme='studio'){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${fontFamilyFor(e,theme)}", sans-serif`;}
 function wrapText(ctx,text,maxWidth){
   const lines=[];maxWidth=Math.max(1,maxWidth);
   for(const para of String(text).replace(/\r\n?/g,'\n').split('\n')){
@@ -454,7 +667,7 @@ function wrapText(ctx,text,maxWidth){
   }return lines;
 }
 function drawText2D(ctx,e,theme){
-  ctx.font=fontCSS(e);ctx.textBaseline='alphabetic';ctx.fillStyle=color(e.fill,theme);ctx.textAlign=e.align||'left';
+  ctx.font=fontCSS(e,theme);ctx.textBaseline='alphabetic';ctx.fillStyle=color(e.fill,theme);ctx.textAlign=e.align||'left';
   const pad=e.padding??4,fs=e.fontSize||24,lh=fs*(e.lineHeight||1.2),lines=wrapText(ctx,e.text,e.w-2*pad),height=lines.length*lh;
   let top=pad;if(e.valign==='middle')top=Math.max(pad,(e.h-height)/2);if(e.valign==='bottom')top=Math.max(pad,e.h-height-pad);
   const x=e.align==='center'?e.w/2:e.align==='right'?e.w-pad:pad;
@@ -476,30 +689,36 @@ function childElement(parent,local,id){
   const a=(parent.rotation||0)*Math.PI/180,c=Math.cos(a),s=Math.sin(a),dx=local.x+local.w/2-parent.w/2,dy=local.y+local.h/2-parent.h/2;
   return{opacity:1,stroke:'none',strokeWidth:0,rotation:0,...local,id:parent.id+':'+id,x:parent.x+parent.w/2+dx*c-dy*s-local.w/2,y:parent.y+parent.h/2+dx*s+dy*c-local.h/2,rotation:(parent.rotation||0)+(local.rotation||0),opacity:(parent.opacity??1)*(local.opacity??1)};
 }
+/** Resolved table geometry shared by rendering, measurement and safe formatting. */
+function tableGeometry(table){
+  const rows=table.cells||[['A','B'],['C','D']],rowCount=rows.length,columnCount=Math.max(1,...rows.map(row=>row.length));
+  const weights=Array.isArray(table.columnWidths)&&table.columnWidths.length===columnCount&&table.columnWidths.every(width=>Number.isFinite(width)&&width>0)?table.columnWidths:Array(columnCount).fill(1);
+  const total=weights.reduce((sum,width)=>sum+width,0),columnWidths=weights.map(width=>table.w*width/total);
+  let offset=0;const columnOffsets=columnWidths.map(width=>{const left=offset;offset+=width;return left;});
+  return {rowCount,columnCount,columnWidths,columnOffsets,rowHeight:table.h/rowCount,paddingX:14,paddingY:8};
+}
 function expandElement(e){
   const out=[];const add=(v)=>out.push(childElement(e,v,out.length));
-  const txt=(text,x,y,w,h,extra={})=>add({type:'text',text:String(text),x,y,w,h,fontFamily:e.fontFamily||'Arial',fontSize:17,fill:'@muted',padding:0,align:'left',lineHeight:1.2,...extra});
+  const txt=(text,x,y,w,h,extra={})=>add({type:'text',text:String(text),x,y,w,h,fontFamily:e.fontFamily||'Arial',fontRole:e.fontRole,fontSize:18,fill:'@muted',padding:0,align:'left',lineHeight:1.2,...extra});
   if(e.type==='table'){
-    const rows=e.cells||[['A','B'],['C','D']],cols=Math.max(1,...rows.map(r=>r.length)),rh=e.h/rows.length,font=e.fontFamily||'Arial';
-    const weights=Array.isArray(e.columnWidths)&&e.columnWidths.length===cols?e.columnWidths:Array(cols).fill(1),total=weights.reduce((a,b)=>a+b,0)||cols;
-    const widths=weights.map(w=>e.w*w/total),lefts=widths.map((_,c)=>widths.slice(0,c).reduce((a,b)=>a+b,0)),highlighted=new Set(e.highlightRows||[]);
+    const rows=e.cells||[['A','B'],['C','D']],{columnCount:cols,columnWidths:widths,columnOffsets:lefts,rowHeight:rh,paddingX,paddingY}=tableGeometry(e),font=e.fontFamily||'Arial',highlighted=new Set(e.highlightRows||[]);
     rows.forEach((row,r)=>{
       const body=r===0?(e.fill||'@dark'):highlighted.has(r)?'@highlight':e.banded===false?'@bg':(r%2?'@bg':'@line');
       for(let c=0;c<cols;c++){
         add({type:'rect',x:lefts[c],y:r*rh,w:widths[c],h:rh,fill:body,stroke:'@light',strokeWidth:1});
-        txt(row[c]??'',lefts[c]+14,r*rh+8,Math.max(1,widths[c]-28),Math.max(1,rh-16),{fontFamily:font,fontSize:e.fontSize||22,fill:r===0?(e.headerColor||'@light'):'@ink',bold:r===0||highlighted.has(r),valign:'middle',align:e.columnAlign?.[c]||'left'});
+        txt(row[c]??'',lefts[c]+paddingX,r*rh+paddingY,Math.max(1,widths[c]-2*paddingX),Math.max(1,rh-2*paddingY),{fontFamily:font,fontSize:e.fontSize||22,fill:r===0?(e.headerColor||'@light'):'@ink',bold:r===0||highlighted.has(r),valign:'middle',align:e.columnAlign?.[c]||'left',tableCell:{tableId:e.id,row:r,column:c}});
       }
     });return out;
   }
   if(e.type!=='chart'||e.chartType==='donut')return[e];
-  const labels=e.labels||['A','B','C'],values=e.values||[30,50,70],mx=Math.max(1,...values),max=Math.ceil(mx/5)*5,left=54,top=24,right=20,bottom=48,W=Math.max(1,e.w-left-right),H=Math.max(1,e.h-top-bottom),bw=W/Math.max(1,labels.length);
-  for(let i=0;i<=4;i++){const y=top+H-H*i/4;add({type:'line',x:left,y,w:W,h:1,fill:'@line'});txt(Math.round(max*i/4),0,y-10,43,22,{fontSize:14,align:'right'});}
+  const labels=e.labels||['A','B','C'],values=e.values||[30,50,70],mx=Math.max(1,...values),max=Math.ceil(mx/5)*5,left=64,top=28,right=20,bottom=56,W=Math.max(1,e.w-left-right),H=Math.max(1,e.h-top-bottom),bw=W/Math.max(1,labels.length);
+  for(let i=0;i<=4;i++){const y=top+H-H*i/4;add({type:'line',x:left,y,w:W,h:1,fill:'@line'});txt(Math.round(max*i/4),0,y-12,55,24,{fontSize:18,align:'right'});}
   values.forEach((v,i)=>{
     const x=left+i*bw,y=top+H-H*v/max;
     if(e.chartType==='bar')add({type:'roundRect',x:x+bw*.18,y,w:bw*.64,h:Math.max(1,top+H-y),fill:i===(Number.isInteger(e.highlight)?e.highlight:values.length-1)?(e.fill||'@accent'):'@secondary',radius:5});
     else{const cx=x+bw/2;if(i>0){const px=cx-bw,py=top+H-H*values[i-1]/max,dx=cx-px,dy=y-py,len=Math.hypot(dx,dy);add({type:'line',x:(px+cx)/2-len/2,y:(py+y)/2-2,w:len,h:4,rotation:Math.atan2(dy,dx)*180/Math.PI,fill:e.fill||'@accent'});}add({type:'ellipse',x:cx-5,y:y-5,w:10,h:10,fill:e.fill||'@accent'});}
-    if(e.showValues!==false)txt(v,x,y-26,bw,23,{fontSize:16,align:'center',fill:'@ink',bold:true});
-    txt(labels[i]||'',x,top+H+15,bw,30,{fontSize:15,align:'center'});
+    if(e.showValues!==false)txt(v,x,y-27,bw,24,{fontSize:18,align:'center',fill:'@ink',bold:true});
+    txt(labels[i]||'',x,top+H+10,bw,44,{fontSize:18,align:'center'});
   });return out;
 }
 function flattenScene(elements){return elements.filter(e=>!e.hidden).flatMap(expandElement);}
@@ -511,7 +730,7 @@ class ImagePool{
 }
 function drawDonut(ctx,e,theme){
   const values=e.values||[],total=values.reduce((a,b)=>a+b,0)||1,cx=e.w*.35,cy=e.h/2,r=Math.min(e.w*.28,e.h*.4),colors=[e.fill||'@accent','@secondary','@dark','@muted','@line'];let a=-Math.PI/2;
-  values.forEach((v,i)=>{const end=a+v/total*Math.PI*2;ctx.beginPath();ctx.arc(cx,cy,r,a,end);ctx.arc(cx,cy,r*.63,end,a,true);ctx.closePath();ctx.fillStyle=color(colors[i%colors.length],theme);ctx.fill();a=end;ctx.fillRect(e.w*.72,35+i*37,12,12);ctx.font=`16px "${e.fontFamily||'Arial'}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(`${e.labels?.[i]||''}  ${v}`,e.w*.72+22,46+i*37);});ctx.textAlign='center';ctx.font=`bold 42px "${e.fontFamily||'Arial'}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(values.reduce((a,b)=>a+b,0),cx,cy+10);ctx.font=`14px "${e.fontFamily||'Arial'}", sans-serif`;ctx.fillStyle=color('@muted',theme);ctx.fillText('TOTAL',cx,cy+36);
+  values.forEach((v,i)=>{const end=a+v/total*Math.PI*2;ctx.beginPath();ctx.arc(cx,cy,r,a,end);ctx.arc(cx,cy,r*.63,end,a,true);ctx.closePath();ctx.fillStyle=color(colors[i%colors.length],theme);ctx.fill();a=end;ctx.fillRect(e.w*.72,35+i*37,12,12);ctx.font=`16px "${fontFamilyFor(e,theme)}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(`${e.labels?.[i]||''}  ${v}`,e.w*.72+22,46+i*37);});ctx.textAlign='center';ctx.font=`bold 42px "${fontFamilyFor(e,theme)}", sans-serif`;ctx.fillStyle=color('@ink',theme);ctx.fillText(values.reduce((a,b)=>a+b,0),cx,cy+10);ctx.font=`14px "${fontFamilyFor(e,theme)}", sans-serif`;ctx.fillStyle=color('@muted',theme);ctx.fillText('TOTAL',cx,cy+36);
 }
 function drawLeaf2D(ctx,e,theme,images){
   if(e.hidden)return;ctx.save();ctx.globalAlpha=e.opacity??1;ctx.translate(e.x+e.w/2,e.y+e.h/2);ctx.rotate((e.rotation||0)*Math.PI/180);ctx.translate(-e.w/2,-e.h/2);
@@ -531,7 +750,7 @@ function paintSlide2D(canvas,slide,doc,images,{scale=1,ignoreId=null}={}){
 }
 function tileSignature(e,theme,resolution){
   if(e.type==='image')return `${e.id}|${e.w}|${e.h}|${e.fit}|${e.src.length}|${resolution}`;
-  return JSON.stringify([e.type,e.text,e.w,e.h,e.fill,e.fontSize,e.fontFamily,e.bold,e.italic,e.underline,e.align,e.valign,e.lineHeight,e.padding,e.chartType,e.labels,e.values,theme,resolution]);
+  return JSON.stringify([e.type,e.text,e.w,e.h,e.fill,e.fontSize,e.fontFamily,e.fontRole,e.bold,e.italic,e.underline,e.align,e.valign,e.lineHeight,e.padding,e.chartType,e.labels,e.values,theme,resolution]);
 }
 class SceneRenderer{
   constructor(canvas,onStatus=()=>{},onInvalidate=()=>{}){
@@ -699,7 +918,7 @@ function solidXML(fill,theme,opacity=1){if(fill==='none')return'<a:noFill/>';con
 function transformXML(e){return`<a:xfrm rot="${Math.round((e.rotation||0)*60000)}"><a:off x="${emu(e.x)}" y="${emu(e.y)}"/><a:ext cx="${emu(e.w)}" cy="${emu(e.h)}"/></a:xfrm>`;}
 function textBodyXML(e,theme){
  const pad=emu(e.padding||0),rPr=`sz="${Math.round((e.fontSize||24)*75)}" b="${e.bold?1:0}" i="${e.italic?1:0}"${e.underline?' u="sng"':''}`;
- return`<p:txBody><a:bodyPr wrap="square" lIns="${pad}" tIns="${pad}" rIns="${pad}" bIns="${pad}" anchor="${({top:'t',middle:'ctr',bottom:'b'})[e.valign]||'t'}"><a:noAutofit/></a:bodyPr><a:lstStyle/>${String(e.text||'').split('\n').map(t=>`<a:p><a:pPr algn="${({left:'l',center:'ctr',right:'r'})[e.align]||'l'}"><a:lnSpc><a:spcPct val="${Math.round((e.lineHeight||1.2)*100000)}"/></a:lnSpc><a:spcBef><a:spcPts val="0"/></a:spcBef><a:spcAft><a:spcPts val="0"/></a:spcAft></a:pPr><a:r><a:rPr lang="en-US" ${rPr}>${solidXML(e.fill,theme,e.opacity??1)}<a:latin typeface="${xmlEsc(e.fontFamily||'Arial')}"/><a:ea typeface="${xmlEsc(e.fontFamily||'Arial')}"/><a:cs typeface="${xmlEsc(e.fontFamily||'Arial')}"/></a:rPr><a:t xml:space="preserve">${xmlEsc(t)}</a:t></a:r><a:endParaRPr lang="en-US" ${rPr}/></a:p>`).join('')}</p:txBody>`;
+ return`<p:txBody><a:bodyPr wrap="square" lIns="${pad}" tIns="${pad}" rIns="${pad}" bIns="${pad}" anchor="${({top:'t',middle:'ctr',bottom:'b'})[e.valign]||'t'}"><a:noAutofit/></a:bodyPr><a:lstStyle/>${String(e.text||'').split('\n').map(t=>`<a:p><a:pPr algn="${({left:'l',center:'ctr',right:'r'})[e.align]||'l'}"><a:lnSpc><a:spcPct val="${Math.round((e.lineHeight||1.2)*100000)}"/></a:lnSpc><a:spcBef><a:spcPts val="0"/></a:spcBef><a:spcAft><a:spcPts val="0"/></a:spcAft></a:pPr><a:r><a:rPr lang="en-US" ${rPr}>${solidXML(e.fill,theme,e.opacity??1)}<a:latin typeface="${xmlEsc(fontFamilyFor(e,theme))}"/><a:ea typeface="${xmlEsc(fontFamilyFor(e,theme))}"/><a:cs typeface="${xmlEsc(fontFamilyFor(e,theme))}"/></a:rPr><a:t xml:space="preserve">${xmlEsc(t)}</a:t></a:r><a:endParaRPr lang="en-US" ${rPr}/></a:p>`).join('')}</p:txBody>`;
 }
 function shapeXML(e,id,theme){
  const preset={rect:'rect',roundRect:'roundRect',ellipse:'ellipse',triangle:'triangle',diamond:'diamond',arrow:'rightArrow',star:'star5',line:'rect'}[e.type]||'rect';
@@ -719,7 +938,7 @@ async function exportPPTX(doc){
  part('ppt/slideLayouts/slideLayout1.xml',`<p:sldLayout ${ns} type="blank" preserve="1"><p:cSld name="Blank"><p:spTree>${groupStart}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>`,type('slideLayout'));
  files['ppt/slideLayouts/_rels/slideLayout1.xml.rels']=xmlRels([['rId1','slideMaster','../slideMasters/slideMaster1.xml']]);
  const colors=['17313A','F5F2EC','71827F','DDDCD4',color('@accent',doc.theme).slice(1),color('@secondary',doc.theme).slice(1),'4472C4','70AD47','FFC000','5B9BD5','0563C1','954F72'];
- part('ppt/theme/theme1.xml',`<a:theme xmlns:a="${A_NS}" name="Presentations"><a:themeElements><a:clrScheme name="Presentations">${['dk1','lt1','dk2','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'].map((k,i)=>`<a:${k}><a:srgbClr val="${colors[i]}"/></a:${k}>`).join('')}</a:clrScheme><a:fontScheme name="Presentations"><a:majorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Presentations"><a:fillStyleLst>${Array(3).fill('<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>').join('')}</a:fillStyleLst><a:lnStyleLst>${[9525,19050,28575].map(w=>`<a:ln w="${w}" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln>`).join('')}</a:lnStyleLst><a:effectStyleLst>${Array(3).fill('<a:effectStyle><a:effectLst/></a:effectStyle>').join('')}</a:effectStyleLst><a:bgFillStyleLst>${Array(3).fill('<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>').join('')}</a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`,'application/vnd.openxmlformats-officedocument.theme+xml');
+ part('ppt/theme/theme1.xml',`<a:theme xmlns:a="${A_NS}" name="Presentations"><a:themeElements><a:clrScheme name="Presentations">${['dk1','lt1','dk2','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'].map((k,i)=>`<a:${k}><a:srgbClr val="${colors[i]}"/></a:${k}>`).join('')}</a:clrScheme><a:fontScheme name="Presentations"><a:majorFont><a:latin typeface="${xmlEsc(THEMES[doc.theme]?.headingFont||'Arial')}"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="${xmlEsc(THEMES[doc.theme]?.bodyFont||'Arial')}"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Presentations"><a:fillStyleLst>${Array(3).fill('<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>').join('')}</a:fillStyleLst><a:lnStyleLst>${[9525,19050,28575].map(w=>`<a:ln w="${w}" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln>`).join('')}</a:lnStyleLst><a:effectStyleLst>${Array(3).fill('<a:effectStyle><a:effectLst/></a:effectStyle>').join('')}</a:effectStyleLst><a:bgFillStyleLst>${Array(3).fill('<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>').join('')}</a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`,'application/vnd.openxmlformats-officedocument.theme+xml');
  part('ppt/notesMasters/notesMaster1.xml',`<p:notesMaster ${ns}><p:cSld><p:spTree>${groupStart}</p:spTree></p:cSld>${clrMap}<p:hf hdr="0" ftr="0" dt="0" sldNum="0"/><p:notesStyle/></p:notesMaster>`,type('notesMaster'));files['ppt/notesMasters/_rels/notesMaster1.xml.rels']=xmlRels([['rId1','theme','../theme/theme1.xml']]);
  for(let i=0;i<doc.slides.length;i++){
   const s=doc.slides[i],rels=[['rId1','slideLayout','../slideLayouts/slideLayout1.xml'],['rId2','notesSlide',`../notesSlides/notesSlide${i+1}.xml`]];let content='',id=2;
@@ -851,7 +1070,10 @@ function composeReferencePresentation(doc, presentation, ctx) {
 
 // ─── src/app.js ───
 const $=(selector,root=document)=>root.querySelector(selector), $$=(selector,root=document)=>[...root.querySelectorAll(selector)];
+const layoutContext=document.createElement('canvas').getContext('2d');
+configureLayoutMeasurement((element,width,theme)=>{if(!layoutContext)throw new Error('Canvas text measurement is unavailable');layoutContext.font=fontCSS(element,theme);return wrapText(layoutContext,element.text,width).length;});
 const store=new Store(createDemo());
+const publicationViewer=globalThis.AURELIA_VIEWER===true;
 const hostedWorkspace=new URLSearchParams(location.search).has('utherealParentOrigin');
 function nativeExportBlocked(){if(!hostedWorkspace)return false;toast('Export from the workspace to include current references.',true);return true;}
 let referencePresentation=null,referenceDocument=null,activeReferenceSlide=null;
@@ -909,7 +1131,7 @@ function drawOverlay(){
  if(selected.length>1)for(const e of selected)parts.push(`<g transform="translate(${e.x+e.w/2} ${e.y+e.h/2}) rotate(${e.rotation||0})"><rect x="${-e.w/2}" y="${-e.h/2}" width="${e.w}" height="${e.h}" fill="none" stroke="#b9574188" stroke-width="${k}" pointer-events="none"/></g>`);
  if(b&&!state.editing){
   const e=selected.length===1?selected[0]:null,box=e?{x:-e.w/2,y:-e.h/2,w:e.w,h:e.h}:{x:-b.w/2,y:-b.h/2,w:b.w,h:b.h},cx=e?e.x+e.w/2:b.x+b.w/2,cy=e?e.y+e.h/2:b.y+b.h/2,rot=e?.rotation||0;
-  const locked=selected.every(e=>e.locked),sc=locked?'#8d9991':'#b95741';parts.push(`<g transform="translate(${cx} ${cy}) rotate(${rot})"><rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="none" stroke="${sc}" stroke-width="${1.1*k}" pointer-events="none"/>`);
+  const locked=selected.every(e=>e.locked)||selected.some(e=>layouts.member(store.slide,e.id)),sc=locked?'#8d9991':'#b95741';parts.push(`<g transform="translate(${cx} ${cy}) rotate(${rot})"><rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="none" stroke="${sc}" stroke-width="${1.1*k}" pointer-events="none"/>`);
   if(!locked){const handles=[['nw',0,0,'nwse-resize'],['n',.5,0,'ns-resize'],['ne',1,0,'nesw-resize'],['e',1,.5,'ew-resize'],['se',1,1,'nwse-resize'],['s',.5,1,'ns-resize'],['sw',0,1,'nesw-resize'],['w',0,.5,'ew-resize']];
    for(const [key,x,y,cursor]of handles)parts.push(`<rect data-handle="${key}" x="${box.x+x*box.w-3.5*k}" y="${box.y+y*box.h-3.5*k}" width="${7*k}" height="${7*k}" rx="${1*k}" fill="white" stroke="${sc}" stroke-width="${k}" style="cursor:${cursor}"/>`);
    parts.push(`<line x1="0" y1="${box.y}" x2="0" y2="${box.y-24*k}" stroke="${sc}" stroke-width="${k}" pointer-events="none"/><circle data-handle="rotate" cx="0" cy="${box.y-27*k}" r="${4*k}" fill="white" stroke="${sc}" stroke-width="${k}" style="cursor:grab"/>`);
@@ -929,7 +1151,7 @@ function renderRibbon(){
  if(state.tab==='Home'){
   html+=ribbonGroup('Clipboard',bigButton('Paste','paste','paste')+`<div class="ribbon-stack">${smallButton('Copy','copy','copy')}${smallButton('Duplicate','duplicate','newslide')}</div>`);
   html+=ribbonGroup('Slides',bigButton('New slide','new-slide','newslide')+`<div class="ribbon-stack">${smallButton('Layout','layout-menu','layout')}${smallButton('Delete','delete-slide','trash')}</div>`);
-  html+=ribbonGroup('Font',`<div class="ribbon-stack"><div class="ribbon-row"><select data-prop="fontFamily" class="ribbon-font" aria-label="Font family">${fontOptions(e.fontFamily||'Arial')}</select><input data-prop="fontSize" aria-label="Font size" class="ribbon-size" type="number" min="4" max="600" value="${e.fontSize||40}"></div><div class="ribbon-row">${iconButton('Bold (Ctrl B)','bold','bold',e.bold)}${iconButton('Italic (Ctrl I)','italic','italic',e.italic)}${iconButton('Underline (Ctrl U)','underline','underline',e.underline)}<span class="ribbon-color">${icon('fontcolor',17)}<input aria-label="Text color" type="color" data-prop="fill" value="${color(e.fill||'@ink',store.doc.theme).slice(0,7)}"></span>${iconButton('Increase font size','font-grow','plus')}${iconButton('Decrease font size','font-shrink','minus')}</div></div>`,'ribbon-font-group');
+  html+=ribbonGroup('Font',`<div class="ribbon-stack"><div class="ribbon-row"><select data-prop="fontFamily" class="ribbon-font" aria-label="Font family">${fontOptions(fontFamilyFor(e,store.doc.theme))}</select><input data-prop="fontSize" aria-label="Font size" class="ribbon-size" type="number" min="4" max="600" value="${e.fontSize||40}"></div><div class="ribbon-row">${iconButton('Bold (Ctrl B)','bold','bold',e.bold)}${iconButton('Italic (Ctrl I)','italic','italic',e.italic)}${iconButton('Underline (Ctrl U)','underline','underline',e.underline)}<span class="ribbon-color">${icon('fontcolor',17)}<input aria-label="Text color" type="color" data-prop="fill" value="${color(e.fill||'@ink',store.doc.theme).slice(0,7)}"></span>${iconButton('Increase font size','font-grow','plus')}${iconButton('Decrease font size','font-shrink','minus')}</div></div>`,'ribbon-font-group');
   html+=ribbonGroup('Paragraph',`<div class="ribbon-stack"><div class="ribbon-row">${iconButton('Align text left','text-align:left','alignleft',e.align==='left')}${iconButton('Center text','text-align:center','aligncenter',e.align==='center')}${iconButton('Align text right','text-align:right','alignright',e.align==='right')}${iconButton('Toggle bullets','bullets','bullets')}</div><div class="ribbon-row"><select class="ribbon-select" data-prop="valign" aria-label="Vertical text alignment"><option value="top"${e.valign==='top'?' selected':''}>Align top</option><option value="middle"${e.valign==='middle'?' selected':''}>Align middle</option><option value="bottom"${e.valign==='bottom'?' selected':''}>Align bottom</option></select></div></div>`);
   html+=ribbonGroup('Drawing',`<div class="ribbon-mini-shapes">${['rect','ellipse','line','arrow','roundRect','triangle','diamond','star'].map(t=>iconButton(`Draw ${t}`,'draw:'+t,t)).join('')}</div>`+bigButton('Text box','insert-text','text')+`<div class="ribbon-stack"><label class="ribbon-color" title="Shape fill">${icon('fill',17)}<input type="color" aria-label="Shape fill" data-prop="fill" value="${color(store.selected[0]?.fill||'@accent',store.doc.theme).slice(0,7)==='none'?'#ffffff':color(store.selected[0]?.fill||'@accent',store.doc.theme).slice(0,7)}"></label><label class="ribbon-color" title="Shape outline">${icon('outline',17)}<input type="color" aria-label="Shape outline" data-prop="stroke" value="${color(store.selected[0]?.stroke==='none'?'@ink':store.selected[0]?.stroke||'@ink',store.doc.theme).slice(0,7)}"></label></div>`);
   html+=ribbonGroup('Arrange',bigButton('Arrange','arrange-menu','layers')+bigButton('Select','panel:layers','pointer'),'optional-group');
@@ -937,7 +1159,8 @@ function renderRibbon(){
  if(state.tab==='Insert'){
   html+=ribbonGroup('Slides',bigButton('New slide','new-slide','newslide')+bigButton('Layouts','layout-menu','layout'));
   html+=ribbonGroup('Text & media',bigButton('Text box','insert-text','text')+bigButton('Pictures','insert-image','image'));
-  html+=ribbonGroup('Illustrations',bigButton('Shapes','shapes-menu','shapes')+`<div class="ribbon-mini-shapes">${['rect','ellipse','line','arrow','roundRect','triangle','diamond','star'].map(t=>iconButton(`Draw ${t}`,'draw:'+t,t)).join('')}</div>`+bigButton('Diagram','insert-diagram','group'));
+  html+=ribbonGroup('Illustrations',bigButton('Shapes','shapes-menu','shapes')+`<div class="ribbon-mini-shapes">${['rect','ellipse','line','arrow','roundRect','triangle','diamond','star'].map(t=>iconButton(`Draw ${t}`,'draw:'+t,t)).join('')}</div>`+bigButton('Process','insert-layout:process','group'));
+  html+=ribbonGroup('Adaptive layouts',bigButton('Compare','insert-layout:comparison','layout')+bigButton('Key figures','insert-layout:key_figures','chart')+bigButton('Takeaway','insert-layout:takeaway_evidence','text'));
   html+=ribbonGroup('Data',bigButton('Chart','insert-chart','chart')+bigButton('Table','insert-table','table'));
   html+=ribbonGroup('Slide information',bigButton('Slide number','insert-number','slide')+bigButton('Date','insert-date','timer'));
  }
@@ -982,10 +1205,11 @@ function renderInspector(){
   <section class="property-section"><h3>Add a slide <span>Choose a layout</span></h3><div class="layout-grid">${['title','content','split','blank'].map(t=>`<button class="layout-choice" data-cmd="new-layout:${t}"><span class="layout-mini ${t}"></span>${{title:'Title slide',content:'Title & content',split:'Two columns',blank:'Blank canvas'}[t]}</button>`).join('')}</div></section>
   <section class="property-section"><h3>Transition</h3><select data-slide-prop="transition" aria-label="Slide transition" style="width:100%;font-size:11px">${['none','fade','push','zoom'].map(t=>`<option value="${t}"${store.slide.transition===t?' selected':''}>${t[0].toUpperCase()+t.slice(1)}</option>`).join('')}</select><p>Select an object to format it.<br>Double-click text to start writing.</p></section>`;return;
  }
- const fill=e.fill==='none'?'#FFFFFF':e.fill;
+ const fill=e.fill==='none'?'#FFFFFF':e.fill,component=layouts.member(store.slide,e.id);
  let html=`<section class="property-section"><h3>Transform <span>${e.locked?'Locked':e.groupId?'Grouped':'Slide coordinates'}</span></h3><div class="property-grid">${propertyField('X position','x',e.x)}${propertyField('Y position','y',e.y)}${propertyField('Width','w',e.w,'number','min="1"')}${propertyField('Height','h',e.h,'number','min="1"')}${propertyField('Rotation °','rotation',e.rotation)}${propertyField('Opacity 0–1','opacity',e.opacity,'number','min="0" max="1" step="0.05"')}</div><div class="inline-actions" style="margin-top:12px">${smallButton(e.locked?'Unlock':'Lock','lock',e.locked?'unlock':'lock')}${smallButton('Arrange','arrange-menu','layers')}</div></section>`;
- if(e.type==='text')html+=`<section class="property-section"><h3>Typography</h3><div class="property-grid"><label class="property-field full">Font family<select data-prop="fontFamily">${fontOptions(e.fontFamily)}</select></label>${propertyField('Font size','fontSize',e.fontSize,'number','min="4" max="600"')}${propertyField('Line height','lineHeight',e.lineHeight,'number','min="0.8" max="3" step="0.05"')}</div><div class="inline-actions" style="margin-top:12px">${iconButton('Bold','bold','bold',e.bold)}${iconButton('Italic','italic','italic',e.italic)}${iconButton('Underline','underline','underline',e.underline)}${iconButton('Left','text-align:left','alignleft',e.align==='left')}${iconButton('Center','text-align:center','aligncenter',e.align==='center')}${iconButton('Right','text-align:right','alignright',e.align==='right')}</div><button class="property-button" data-cmd="edit-text">${icon('text')}Edit text</button></section>`;
- if(e.type!=='image')html+=`<section class="property-section"><h3>${e.type==='text'?'Text color':'Appearance'}</h3>${colorField(e.type==='text'?'Color':'Fill','fill',fill)}${paletteHTML('fill',e.fill)}${e.type!=='text'?`<div style="margin-top:15px">${colorField('Outline','stroke',e.stroke==='none'?'@ink':e.stroke)}</div><div class="property-grid">${propertyField('Outline width','strokeWidth',e.strokeWidth,'number','min="0" max="100"')}${e.type==='roundRect'?propertyField('Corner radius','radius',e.radius,'number','min="0"'):''}</div><button class="property-button" data-cmd="no-fill">No fill</button>`:''}</section>`;
+ if(component){const diagnostic=layouts.inspect(store.doc).find(item=>item.id===component.id),label=LAYOUT_UI[component.type].name;html=`<section class="property-section"><h3>Adaptive ${label.toLowerCase()}</h3><p>${diagnostic?.overflow?'Content exceeds the reserved area. All text is retained.':'Text edits keep the layout aligned.'}</p><div class="property-grid">${['x','y','w','h'].map(key=>`<label class="property-field">${({x:'X position',y:'Y position',w:'Width',h:'Available height'})[key]}<input type="number" data-layout-frame="${key}" data-layout-id="${escapeHTML(component.id)}" value="${component.frame[key]}"></label>`).join('')}</div><button class="property-button" data-cmd="edit-adaptive:${escapeHTML(component.id)}">${icon('group')}Edit content</button><button class="property-button" data-cmd="detach-layout:${escapeHTML(component.id)}">Detach layout for freeform editing</button></section>`;}
+ if(e.type==='text')html+=`<section class="property-section"><h3>Typography</h3><label class="property-field">Theme font<select data-prop="fontRole" aria-label="Theme font role">${['explicit','heading','body'].map(role=>`<option value="${role}"${(e.fontRole||'explicit')===role?' selected':''}>${({explicit:'Custom font',heading:'Theme heading',body:'Theme body'})[role]}</option>`).join('')}</select></label><div class="property-grid"><label class="property-field full">Font family<select data-prop="fontFamily">${fontOptions(fontFamilyFor(e,store.doc.theme))}</select></label>${propertyField('Font size','fontSize',e.fontSize,'number','min="4" max="600"')}${propertyField('Line height','lineHeight',e.lineHeight,'number','min="0.8" max="3" step="0.05"')}</div><div class="inline-actions" style="margin-top:12px">${iconButton('Bold','bold','bold',e.bold)}${iconButton('Italic','italic','italic',e.italic)}${iconButton('Underline','underline','underline',e.underline)}${iconButton('Left','text-align:left','alignleft',e.align==='left')}${iconButton('Center','text-align:center','aligncenter',e.align==='center')}${iconButton('Right','text-align:right','alignright',e.align==='right')}</div><button class="property-button" data-cmd="edit-text">${icon('text')}Edit text</button></section>`;
+ if(e.type!=='image'&&(!component||e.type==='chart'))html+=`<section class="property-section"><h3>${e.type==='text'?'Text color':'Appearance'}</h3>${colorField(e.type==='text'?'Color':'Fill','fill',fill)}${paletteHTML('fill',e.fill)}${e.type!=='text'?`<div style="margin-top:15px">${colorField('Outline','stroke',e.stroke==='none'?'@ink':e.stroke)}</div><div class="property-grid">${propertyField('Outline width','strokeWidth',e.strokeWidth,'number','min="0" max="100"')}${e.type==='roundRect'?propertyField('Corner radius','radius',e.radius,'number','min="0"'):''}</div><button class="property-button" data-cmd="no-fill">No fill</button>`:''}</section>`;
  if(e.type==='image')html+=`<section class="property-section"><h3>Picture</h3><label class="property-field">Image fit<select data-prop="fit"><option value="cover"${e.fit==='cover'?' selected':''}>Fill (center crop)</option><option value="contain"${e.fit==='contain'?' selected':''}>Fit entire image</option></select></label><button class="property-button" data-cmd="replace-image">${icon('image')}Replace picture</button></section>`;
  if(e.type==='chart')html+=`<section class="property-section"><h3>Chart data</h3><label class="property-field">Chart type<select data-prop="chartType">${['bar','line','donut'].map(t=>`<option value="${t}"${t===e.chartType?' selected':''}>${t[0].toUpperCase()+t.slice(1)}</option>`).join('')}</select></label><button class="property-button" data-cmd="edit-data">${icon('chart')}Edit chart data</button></section>`;
  if(e.type==='table')html+=`<section class="property-section"><h3>Table data</h3>${propertyField('Cell font size','fontSize',e.fontSize)}<button class="property-button" data-cmd="edit-data">${icon('table')}Edit table</button></section>`;
@@ -1011,11 +1235,13 @@ function syncUI(kind='change'){
 }
 store.onChange(kind=>{if(kind==='commit'||kind==='restore')setReferencePresentation(null);else if(kind==='active')activeReferenceSlide=null;syncUI(kind);if(kind==='commit'||kind==='restore'){schedulePersist();resizeStage();const sources=new Set(store.doc.slides.flatMap(s=>s.elements.filter(e=>e.type==='image').map(e=>e.src)));renderer.images.retain(sources);thumbnailsImages.retain(sources);}});
 async function openStorage(){
+ if(publicationViewer)return null;
  try{storageDB=await new Promise((resolve,reject)=>{const req=indexedDB.open('aurelia-slides-v1',1);req.onupgradeneeded=()=>req.result.createObjectStore('documents');req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);req.onblocked=()=>reject(new Error('Local storage is blocked by another tab.'));});return await new Promise((resolve,reject)=>{const tx=storageDB.transaction('documents','readonly'),r=tx.objectStore('documents').get('current');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
  catch(error){storageAvailable=false;try{const s=localStorage.getItem('aurelia-backup');return s?JSON.parse(s):null;}catch{return null;}}
 }
-function schedulePersist(){clearTimeout(savePending);$('#saveText').textContent='Saving locally…';savePending=setTimeout(persist,450);}
+function schedulePersist(){if(publicationViewer)return;clearTimeout(savePending);$('#saveText').textContent='Saving locally…';savePending=setTimeout(persist,450);}
 async function persist(){
+ if(publicationViewer)return;
  clearTimeout(savePending);const revision=store.revision,doc=clone(store.doc);
  try{if(storageDB){await new Promise((resolve,reject)=>{const tx=storageDB.transaction('documents','readwrite');tx.objectStore('documents').put(doc,'current');tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}else localStorage.setItem('aurelia-backup',JSON.stringify(doc));lastPersistedRevision=revision;$('#saveText').textContent='Saved on this device';$('#saveIndicator').title='Saved on this device. Export a file to keep an independent backup.';}
  catch(error){$('#saveText').textContent='Not saved';$('#saveIndicator').title=error.message;toast('Local storage is unavailable or full. Use File → Save .presentation to keep your work.',true);}
@@ -1041,12 +1267,12 @@ function selectElement(element,additive=false){
 function setTool(type){finishTextEditing();state.tool=type;store.select([]);stage.classList.add('drawing');$('#canvasHint').textContent=`Draw ${type==='text'?'a text box':type} · Click and drag on the slide · Esc cancels`;closeMenu();}
 function clearTool(){state.tool=null;stage.classList.remove('drawing');$('#canvasHint').textContent='Double-click text to edit · Drag to move · Shift-click to select multiple';}
 function startTextEditing(e){
- if(!e||e.type!=='text'||e.locked)return;finishTextEditing();clearTool();store.select([e.id]);store.begin('Edit text');state.editing={id:e.id,original:e.text};textEditor.value=e.text;textEditor.hidden=false;syncTextEditorPosition();textEditor.focus();textEditor.select();syncUI('selection');
+ if(!e||e.type!=='text'||e.locked)return;try{layouts.assertProperties(store.slide,[e.id],{text:e.text});}catch(error){toast(error.message,true);return;}finishTextEditing();clearTool();store.select([e.id]);store.begin('Edit text');state.editing={id:e.id,original:e.text};textEditor.value=e.text;textEditor.hidden=false;syncTextEditorPosition();textEditor.focus();textEditor.select();syncUI('selection');
 }
 function syncTextEditorPosition(){
  if(!state.editing)return;const e=store.slide.elements.find(e=>e.id===state.editing.id);if(!e)return;const sc=state.scale;
- Object.assign(textEditor.style,{left:e.x*sc+'px',top:e.y*sc+'px',width:e.w*sc+'px',height:e.h*sc+'px',fontFamily:`"${e.fontFamily}", sans-serif`,fontSize:e.fontSize*sc+'px',fontWeight:e.bold?'700':'400',fontStyle:e.italic?'italic':'normal',textDecoration:e.underline?'underline':'none',lineHeight:e.lineHeight||1.2,color:color(e.fill,store.doc.theme),textAlign:e.align||'left',padding:(e.padding||0)*sc+'px',transform:`rotate(${e.rotation||0}deg)`});
- if(e.valign==='middle'||e.valign==='bottom'){const c=document.createElement('canvas'),ctx=c.getContext('2d');ctx.font=fontCSS(e);const lines=wrapText(ctx,e.text,e.w-2*(e.padding||0)),h=lines.length*e.fontSize*(e.lineHeight||1.2),p=e.valign==='middle'?Math.max(e.padding||0,(e.h-h)/2):Math.max(e.padding||0,e.h-h-(e.padding||0));textEditor.style.paddingTop=p*sc+'px';}
+ Object.assign(textEditor.style,{left:e.x*sc+'px',top:e.y*sc+'px',width:e.w*sc+'px',height:e.h*sc+'px',fontFamily:`"${fontFamilyFor(e,store.doc.theme)}", sans-serif`,fontSize:e.fontSize*sc+'px',fontWeight:e.bold?'700':'400',fontStyle:e.italic?'italic':'normal',textDecoration:e.underline?'underline':'none',lineHeight:e.lineHeight||1.2,color:color(e.fill,store.doc.theme),textAlign:e.align||'left',padding:(e.padding||0)*sc+'px',transform:`rotate(${e.rotation||0}deg)`});
+ if(e.valign==='middle'||e.valign==='bottom'){const c=document.createElement('canvas'),ctx=c.getContext('2d');ctx.font=fontCSS(e,store.doc.theme);const lines=wrapText(ctx,e.text,e.w-2*(e.padding||0)),h=lines.length*e.fontSize*(e.lineHeight||1.2),p=e.valign==='middle'?Math.max(e.padding||0,(e.h-h)/2):Math.max(e.padding||0,e.h-h-(e.padding||0));textEditor.style.paddingTop=p*sc+'px';}
 }
 function finishTextEditing(cancel=false){
  if(!state.editing)return;const id=state.editing.id;state.editing=null;textEditor.hidden=true;
@@ -1067,6 +1293,7 @@ stage.addEventListener('pointerdown',event=>{
  if(hit){
   if(event.shiftKey)selectElement(hit,true);else if(!store.selection.has(hit.id))selectElement(hit);
   if(!store.selection.has(hit.id))return;
+  if(layouts.member(store.slide,hit.id)){renderInspector();return;}
   if(event.altKey&&!hit.locked)store.duplicateSelected();
   const orig=clone(store.selected.filter(e=>!e.locked));if(!orig.length)return;store.begin('Move objects');state.drag={type:'move',start:p,orig,bounds:unionBounds(orig),pointer:event.pointerId};
  }else{state.drag={type:'marquee',start:p,old:event.shiftKey?[...store.selection]:[],pointer:event.pointerId};if(!event.shiftKey)store.select([]);}
@@ -1130,19 +1357,22 @@ $('#thumbnails').addEventListener('dragover',event=>{const t=event.target.closes
 $('#thumbnails').addEventListener('drop',event=>{const t=event.target.closest('[data-slide]');event.preventDefault();if(t&&draggingSlide){const from=store.doc.slides.findIndex(s=>s.id===draggingSlide),to=store.doc.slides.findIndex(s=>s.id===t.dataset.slide);if(from>=0&&to>=0&&from!==to)store.reorderSlide(from,to);}draggingSlide=null;$$('.thumb').forEach(t=>t.classList.remove('dragover','dragging'));});
 $('#thumbnails').addEventListener('dragend',()=>{draggingSlide=null;$$('.thumb').forEach(t=>t.classList.remove('dragover','dragging'));});
 function selectedText(){return store.selected.filter(e=>e.type==='text'&&!e.locked);}
-function formatText(props,label='Format text'){if(!selectedText().length){toast('Select a text box to change its formatting.');return;}store.transaction(label,()=>selectedText().forEach(e=>Object.assign(e,props)));}
+function formatText(props,label='Format text'){if(!selectedText().length){toast('Select a text box to change its formatting.');return;}layouts.assertProperties(store.slide,selectedText().map(element=>element.id),props);store.transaction(label,()=>selectedText().forEach(e=>{Object.assign(e,props);if('fontFamily'in props&&!('fontRole'in props))delete e.fontRole;}));}
 function updateProperty(name,value){
  if(!store.selected.length){toast('Select an object first.');renderRibbon();return;}
  const numbers={x:[-100000,100000],y:[-100000,100000],w:[1,16384],h:[1,16384],rotation:[-36000,36000],opacity:[0,1],fontSize:[4,600],lineHeight:[.8,3],strokeWidth:[0,100],radius:[0,2000]};
+ layouts.assertProperties(store.slide,store.selected.map(element=>element.id),{[name]:value});
  if(name in numbers){value=Number(value);if(!Number.isFinite(value))return;value=clamp(value,...numbers[name]);}
+ if(name==='fontRole'){if(!selectedText().length)return;store.transaction('Change theme font',()=>selectedText().forEach(element=>{if(value==='explicit')delete element.fontRole;else element.fontRole=value;}));return;}
  if(['fontFamily','bold','italic','underline','align','valign','lineHeight'].includes(name)){formatText({[name]:value});return;}
  store.transaction('Change '+name,()=>{for(const e of store.selected)if(!e.locked){e[name]=value;if(name==='stroke'&&e.strokeWidth===0)e.strokeWidth=2;}});
 }
-document.addEventListener('change',event=>{
+document.addEventListener('change',safeRun(event=>{
  const el=event.target;
+ if(el.matches('[data-layout-frame]')){const component=layouts.inspect(store.doc).find(item=>item.id===el.dataset.layoutId);store.transaction('Resize adaptive layout',()=>layouts.update(store.doc,component.id,{frame:{...component.frame,[el.dataset.layoutFrame]:Number(el.value)}}));renderInspector();return;}
  if(el.matches('[data-prop]'))updateProperty(el.dataset.prop,el.type==='checkbox'?el.checked:el.value);
  if(el.matches('[data-slide-prop]')){const key=el.dataset.slideProp,value=key==='duration'?clamp(+el.value||.45,.1,5):el.value;store.transaction('Change slide '+key,()=>store.slide[key]=value);}
-});
+}));
 let notesTimer=0;
 $('#notes').addEventListener('focus',()=>store.begin('Edit speaker notes'));
 $('#notes').addEventListener('input',()=>{if(!store.pending)store.begin('Edit speaker notes');store.slide.notes=$('#notes').value;clearTimeout(notesTimer);notesTimer=setTimeout(()=>{store.commit();},800);});
@@ -1155,7 +1385,7 @@ modal.addEventListener('close',()=>{viewport.focus({preventScroll:true});});
 document.addEventListener('pointerdown',event=>{if(!menu.hidden&&!menu.contains(event.target)&&!event.target.closest('[data-cmd]'))closeMenu();});
 document.addEventListener('click',safeRun(async event=>{
  const colorButton=event.target.closest('[data-color-prop]');if(colorButton){const key=colorButton.dataset.colorProp,val=colorButton.dataset.value;if(key==='bg')store.transaction('Background color',()=>store.slide.bg=val);else updateProperty(key,val);return;}
- const layerAction=event.target.closest('[data-layer-action]');if(layerAction){const e=store.slide.elements.find(e=>e.id===layerAction.dataset.id);if(e)store.transaction(layerAction.dataset.layerAction==='lock'?'Toggle object lock':'Toggle object visibility',()=>{if(layerAction.dataset.layerAction==='lock')e.locked=!e.locked;else e.hidden=!e.hidden;});renderInspector();return;}
+ const layerAction=event.target.closest('[data-layer-action]');if(layerAction){const e=store.slide.elements.find(e=>e.id===layerAction.dataset.id);if(e&&layerAction.dataset.layerAction==='visibility')layouts.assertProperties(store.slide,[e.id],{hidden:!e.hidden});if(e)store.transaction(layerAction.dataset.layerAction==='lock'?'Toggle object lock':'Toggle object visibility',()=>{if(layerAction.dataset.layerAction==='lock')e.locked=!e.locked;else e.hidden=!e.hidden;});renderInspector();return;}
  const layer=event.target.closest('[data-layer]');if(layer){const e=store.slide.elements.find(e=>e.id===layer.dataset.layer);if(e)selectElement(e,event.shiftKey);renderInspector();return;}
  const button=event.target.closest('[data-cmd]');if(button){const cmd=button.dataset.cmd;if(menu.contains(button))closeMenu();await command(cmd,button);}
 }));
@@ -1182,10 +1412,31 @@ $('#openFile').addEventListener('change',safeRun(async event=>{const file=event.
 viewport.addEventListener('dragover',event=>{if(event.dataTransfer.types.includes('Files')){event.preventDefault();event.dataTransfer.dropEffect='copy';}});
 viewport.addEventListener('drop',safeRun(async event=>{event.preventDefault();for(const file of event.dataTransfer.files)if(file.type.startsWith('image/'))await insertImageFile(file);}));
 document.addEventListener('paste',safeRun(async event=>{if(['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)||state.presenting||modal.open)return;const image=[...event.clipboardData.items].find(i=>i.kind==='file'&&i.type.startsWith('image/'));if(image){event.preventDefault();await insertImageFile(image.getAsFile());return;}const text=event.clipboardData.getData('text/plain');if(text){event.preventDefault();await pasteSelection(text);}}));
-function insertDiagram(){
- const groupId=uid('g'),x=store.doc.width*.085,y=store.doc.height*.4,w=store.doc.width*.225,h=142,gap=store.doc.width*.078,els=[];
- ['Discover','Create','Deliver'].forEach((label,i)=>{const xx=x+i*(w+gap);els.push(makeElement('roundRect',{x:xx,y,w,h,fill:i===1?'@accent':'@dark',radius:16,groupId,name:label+' step'}));els.push(makeElement('text',{x:xx+18,y:y+48,w:w-36,h:60,text:label,fontSize:36,bold:true,align:'center',fill:'@light',groupId}));if(i<2)els.push(makeElement('arrow',{x:xx+w+15,y:y+h/2-12,w:gap-30,h:24,fill:'@secondary',groupId}));});store.transaction('Insert process diagram',()=>store.slide.elements.push(...els));store.select(els.map(e=>e.id));
+const LAYOUT_UI={
+ process:{name:'Process',collection:'steps',itemName:'Step',min:2,max:6,fields:{title:'Heading',body:'Description'},defaults:[{title:'Discover',body:'Understand the opportunity.'},{title:'Create',body:'Build and test the solution.'},{title:'Deliver',body:'Launch and learn.'}]},
+ comparison:{name:'Comparison',collection:'items',itemName:'Alternative',min:2,max:2,fields:{title:'Heading',body:'Description'},defaults:[{title:'First alternative',body:'The strengths and tradeoffs.'},{title:'Second alternative',body:'The strengths and tradeoffs.'}]},
+ key_figures:{name:'Key figures',collection:'figures',itemName:'Figure',min:1,max:4,fields:{value:'Value',label:'Label',context:'Context'},defaults:[{value:'42%',label:'A meaningful measure',context:'The context behind the figure.'},{value:'2×',label:'A second measure',context:'A useful comparison.'}]},
+ takeaway_evidence:{name:'Takeaway and evidence',collection:'points',itemName:'Point',min:1,max:4,fields:{text:'Supporting point'},defaults:[{text:'One supporting observation.'},{text:'A second supporting observation.'}]},
+};
+function editAdaptiveLayout(componentId=null,type='process'){
+ const component=componentId?layouts.inspect(store.doc).find(item=>item.id===componentId):null;
+ type=component?.type||type;const config=LAYOUT_UI[type],byId=new Map(store.slide.elements.map(element=>[element.id,element]));
+ const slotKeys={title:'title_id',body:'body_id',value:'value_id',label:'label_id',context:'context_id',text:'text_id'};
+ let items=component?component[config.collection].map(item=>({id:item.id,...Object.fromEntries(Object.keys(config.fields).map(field=>[field,byId.get(item[slotKeys[field]]).text]))})):clone(config.defaults),emphasized=component?.emphasis_step_id||null;
+ const rows=()=>items.map((item,index)=>`<section class="property-section"><h3>${config.itemName} ${index+1}</h3>${Object.entries(config.fields).map(([field,label])=>`<label class="property-field">${label}<textarea data-layout-field="${field}" data-layout-row="${index}" aria-label="${config.itemName} ${index+1} ${label.toLowerCase()}">${escapeHTML(item[field]||'')}</textarea></label>`).join('')}<div class="inline-actions"><button class="secondary" data-item-up="${index}" aria-label="Move ${config.itemName.toLowerCase()} ${index+1} up"${index===0?' disabled':''}>↑</button><button class="secondary" data-item-down="${index}" aria-label="Move ${config.itemName.toLowerCase()} ${index+1} down"${index===items.length-1?' disabled':''}>↓</button><button class="secondary" data-item-remove="${index}" aria-label="Remove ${config.itemName.toLowerCase()} ${index+1}"${items.length<=config.min?' disabled':''}>Remove</button>${type==='process'?`<label><input type="radio" name="process-emphasis" data-item-emphasis="${index}"${item.id&&item.id===emphasized?' checked':''}>Emphasize</label>`:''}</div></section>`).join('');
+ const charts=store.slide.elements.filter(element=>element.type==='chart'&&(!layouts.member(store.slide,element.id)||element.id===component?.chart_id));
+ const evidence=type==='takeaway_evidence'?`<label class="property-field">Takeaway<textarea id="layoutTakeaway" aria-label="Takeaway">${escapeHTML(component?byId.get(component.takeaway_id).text:'The main conclusion.')}</textarea></label><label class="property-field">Evidence<select id="layoutEvidence" aria-label="Evidence"${component?' disabled':''}><option value="points">Supporting points</option>${charts.map(chart=>`<option value="${escapeHTML(chart.id)}"${component?.chart_id===chart.id?' selected':''}>${escapeHTML(chart.name)}</option>`).join('')}</select></label>`:'';
+ const action=component?'Apply':'Insert',name=config.name.toLowerCase();
+ openModal(`${component?'Edit':'Insert'} ${name}`,`<p class="modal-description">${config.min}–${config.max} ordered ${config.itemName.toLowerCase()}${config.max===1?'':'s'}. Text remains editable on the slide and the layout adapts automatically.</p><label class="property-field">Slide title<input id="adaptiveTitle" aria-label="${config.name} slide title" value="${escapeHTML(component?.title_id?byId.get(component.title_id).text:component?'':type==='process'?'How it works':config.name)}"></label>${evidence}<div id="adaptiveItems">${rows()}</div><div id="adaptiveActions"><button id="addAdaptiveItem" class="secondary">Add ${config.itemName.toLowerCase()}</button>${type==='process'?'<button id="clearAdaptiveEmphasis" class="secondary">Clear emphasis</button>':''}</div>`,[{label:'Cancel',action:()=>{}},{label:`${action} ${name}`,primary:true,action:()=>{read();store.transaction(`${action} ${name}`,()=>{const chartId=$('#layoutEvidence')?.value,input={title:$('#adaptiveTitle').value,...(type==='takeaway_evidence'?{takeaway:$('#layoutTakeaway').value}:{}),...(chartId&&chartId!=='points'?{chart_id:chartId}:{[config.collection]:items}),...(type==='process'?{emphasis_step_id:emphasized}:{})};const result=component?layouts.update(store.doc,component.id,input):layouts.create(store.doc,store.active,{...input,type});store.select(layouts.elementIds(result));});renderInspector();}}],640);
+ function read(){for(const [index,item]of items.entries())for(const field of Object.keys(config.fields))item[field]=$(`[data-layout-row="${index}"][data-layout-field="${field}"]`,modal).value;}
+ const redraw=()=>{$('#adaptiveItems').innerHTML=rows();$('#addAdaptiveItem').disabled=items.length>=config.max;};
+ $('#adaptiveItems').addEventListener('click',event=>{const button=event.target.closest('[data-item-up],[data-item-down],[data-item-remove],[data-item-emphasis]');if(!button)return;read();if(button.dataset.itemEmphasis!==undefined){const index=+button.dataset.itemEmphasis;items[index].id??=uid('item');emphasized=items[index].id;return;}const up=button.dataset.itemUp,down=button.dataset.itemDown,remove=button.dataset.itemRemove;if(remove!==undefined){const [removed]=items.splice(+remove,1);if(removed.id===emphasized)emphasized=null;}else{const index=+(up??down),other=index+(up!==undefined?-1:1);[items[index],items[other]]=[items[other],items[index]];}redraw();});
+ $('#addAdaptiveItem').addEventListener('click',()=>{read();if(items.length<config.max)items.push(Object.fromEntries(Object.keys(config.fields).map((field,index)=>[field,index===0?'New '+config.itemName.toLowerCase():''])));redraw();});
+ $('#clearAdaptiveEmphasis')?.addEventListener('click',()=>{emphasized=null;read();redraw();});
+ const showEvidence=()=>{const chart=$('#layoutEvidence')?.value;$('#adaptiveItems').hidden=!!chart&&chart!=='points';$('#adaptiveActions').hidden=!!chart&&chart!=='points';};
+ $('#layoutEvidence')?.addEventListener('change',showEvidence);showEvidence();$('#addAdaptiveItem').disabled=items.length>=config.max;
 }
+
 function editData(e){
  if(e.locked){toast('Unlock this object before editing its data.');return;}
  if(e.type==='table'){
@@ -1200,7 +1451,7 @@ function editData(e){
  $('#addChartRow').addEventListener('click',()=>{readRows();if(labels.length>=30){toast('Charts support up to 30 categories.');return;}labels.push('New');values.push(50);$('#chartRows').innerHTML=rows();});
 }
 function showSlideSize(){
- openModal('Presentation size',`<p class="modal-description">Slide dimensions use a 96-pixel-per-inch design coordinate system. Rescale content to keep your layout proportional.</p><div class="modal-form"><label>Preset<select id="sizePreset"><option value="1280,720">Widescreen · 16:9</option><option value="1200,900">Standard · 4:3</option><option value="1080,1080">Square · 1:1</option><option value="1080,1920">Portrait · 9:16</option><option value="custom" selected>Custom</option></select></label><div class="property-grid"><label>Width<input id="deckWidth" type="number" min="320" max="4096" value="${store.doc.width}"></label><label>Height<input id="deckHeight" type="number" min="240" max="4096" value="${store.doc.height}"></label></div><label style="display:flex;flex-direction:row;align-items:center"><input id="scaleContent" type="checkbox" checked>Rescale all slide content</label></div>`,[{label:'Cancel',action:()=>{}},{label:'Apply size',primary:true,action:()=>{const w=clamp(+$('#deckWidth').value||1280,320,4096),h=clamp(+$('#deckHeight').value||720,240,4096),sx=w/store.doc.width,sy=h/store.doc.height,scale=$('#scaleContent').checked;store.transaction('Resize presentation',()=>{if(scale)for(const s of store.doc.slides)for(const e of s.elements){e.x*=sx;e.y*=sy;e.w*=sx;e.h*=sy;if(e.fontSize)e.fontSize*=Math.min(sx,sy);e.radius*=Math.min(sx,sy);}store.doc.width=w;store.doc.height=h;});zoomTo('fit');}}]);
+ openModal('Presentation size',`<p class="modal-description">Slide dimensions use a 96-pixel-per-inch design coordinate system. Rescale content to keep your layout proportional.</p><div class="modal-form"><label>Preset<select id="sizePreset"><option value="1280,720">Widescreen · 16:9</option><option value="1200,900">Standard · 4:3</option><option value="1080,1080">Square · 1:1</option><option value="1080,1920">Portrait · 9:16</option><option value="custom" selected>Custom</option></select></label><div class="property-grid"><label>Width<input id="deckWidth" type="number" min="320" max="4096" value="${store.doc.width}"></label><label>Height<input id="deckHeight" type="number" min="240" max="4096" value="${store.doc.height}"></label></div><label style="display:flex;flex-direction:row;align-items:center"><input id="scaleContent" type="checkbox" checked>Rescale all slide content</label></div>`,[{label:'Cancel',action:()=>{}},{label:'Apply size',primary:true,action:()=>{const w=clamp(+$('#deckWidth').value||1280,320,4096),h=clamp(+$('#deckHeight').value||720,240,4096),sx=w/store.doc.width,sy=h/store.doc.height,scale=$('#scaleContent').checked;store.transaction('Resize presentation',()=>{if(scale)for(const s of store.doc.slides){for(const component of s.components||[]){component.frame.x*=sx;component.frame.y*=sy;component.frame.w*=sx;component.frame.h*=sy;}for(const e of s.elements){e.x*=sx;e.y*=sy;e.w*=sx;e.h*=sy;if(e.fontSize)e.fontSize*=Math.min(sx,sy);e.radius*=Math.min(sx,sy);}}store.doc.width=w;store.doc.height=h;});zoomTo('fit');}}]);
  $('#sizePreset').addEventListener('change',event=>{if(event.target.value!=='custom'){const [w,h]=event.target.value.split(',');$('#deckWidth').value=w;$('#deckHeight').value=h;}});
 }
 function showSorter(){
@@ -1210,7 +1461,7 @@ function showSorter(){
 function showDiagnostics(){
  const stats=renderer.lastStats;openModal('Rendering engine',`<p class="modal-description">${renderer.mode==='webgpu'?'WebGPU · direct instanced drawing with analytic shape coverage and cached text/image tiles.':'Canvas 2D compatibility renderer is active.'}</p><div class="diagnostic-grid"><div><strong>${renderer.mode==='webgpu'?'GPU':'2D'}</strong><span>Active renderer</span></div><div><strong>${stats.ms.toFixed(2)} ms</strong><span>Last CPU render / submission time</span></div><div><strong>${stats.objects}</strong><span>Flattened visible objects</span></div><div><strong>${stats.draws}</strong><span>Draw calls in last frame</span></div><div><strong>${(renderer.cacheBytes/1048576).toFixed(1)} MB</strong><span>GPU tile cache (96 MB soft limit)</span></div><div><strong>${store.past.length}</strong><span>Undo transactions retained</span></div></div><p class="modal-description" style="margin-top:16px">${escapeHTML(state.rendererReason)}<br>Render-on-demand; no continuous editing-frame loop. Timing above is CPU preparation and submission time, not measured GPU execution time or an FPS benchmark.</p>`,[{label:'Close',primary:true,action:()=>{}}],550);
 }
-const COMMANDS=[['New slide','new-slide','newslide','Ctrl M'],['Insert text box','insert-text','text'],['Insert picture','insert-image','image'],['Insert chart','insert-chart','chart'],['Insert table','insert-table','table'],['Insert process diagram','insert-diagram','group'],['Draw rectangle','draw:rect','rect'],['Draw ellipse','draw:ellipse','ellipse'],['Draw arrow','draw:arrow','arrow'],['Save presentation','save','save','Ctrl S'],['Open presentation','open','folder','Ctrl O'],['Export PowerPoint','export-pptx','export'],['Export PNG image','export-png','image'],['Export vector SVG','export-svg','shapes'],['Print / Save as PDF','print','slide'],['Undo','undo','undo','Ctrl Z'],['Redo','redo','redo','Ctrl Shift Z'],['Duplicate selected objects','duplicate','copy','Ctrl D'],['Duplicate current slide','duplicate-slide','newslide'],['Delete current slide','delete-slide','trash'],['Select all objects','select-all','pointer','Ctrl A'],['Bring to front','front','front'],['Send to back','back','back'],['Align center','align:center','aligncenter'],['Align middle','align:middle','align'],['Group objects','group','group','Ctrl G'],['Ungroup objects','ungroup','shapes','Ctrl Shift G'],['Slide sorter','sorter','grid'],['Present from beginning','present-first','play','F5'],['Present from current slide','present','screen','Shift F5'],['Presenter notes view','present-notes','notes'],['Toggle grid','toggle-grid','grid'],['Toggle snap guides','toggle-snap','align'],['Toggle notes','toggle-notes','notes'],['Toggle appearance','toggle-dark','moon'],['Fit slide to window','zoom-fit','fit'],['Slide dimensions','slide-size','fit'],['Rendering diagnostics','diagnostics','code']];
+const COMMANDS=[['New slide','new-slide','newslide','Ctrl M'],['Insert text box','insert-text','text'],['Insert picture','insert-image','image'],['Insert chart','insert-chart','chart'],['Insert table','insert-table','table'],['Insert process diagram','insert-layout:process','group'],['Insert comparison','insert-layout:comparison','layout'],['Insert key figures','insert-layout:key_figures','chart'],['Insert takeaway and evidence','insert-layout:takeaway_evidence','text'],['Draw rectangle','draw:rect','rect'],['Draw ellipse','draw:ellipse','ellipse'],['Draw arrow','draw:arrow','arrow'],['Save presentation','save','save','Ctrl S'],['Open presentation','open','folder','Ctrl O'],['Export PowerPoint','export-pptx','export'],['Export PNG image','export-png','image'],['Export vector SVG','export-svg','shapes'],['Print / Save as PDF','print','slide'],['Undo','undo','undo','Ctrl Z'],['Redo','redo','redo','Ctrl Shift Z'],['Duplicate selected objects','duplicate','copy','Ctrl D'],['Duplicate current slide','duplicate-slide','newslide'],['Delete current slide','delete-slide','trash'],['Select all objects','select-all','pointer','Ctrl A'],['Bring to front','front','front'],['Send to back','back','back'],['Align center','align:center','aligncenter'],['Align middle','align:middle','align'],['Group objects','group','group','Ctrl G'],['Ungroup objects','ungroup','shapes','Ctrl Shift G'],['Slide sorter','sorter','grid'],['Present from beginning','present-first','play','F5'],['Present from current slide','present','screen','Shift F5'],['Presenter notes view','present-notes','notes'],['Toggle grid','toggle-grid','grid'],['Toggle snap guides','toggle-snap','align'],['Toggle notes','toggle-notes','notes'],['Toggle appearance','toggle-dark','moon'],['Fit slide to window','zoom-fit','fit'],['Slide dimensions','slide-size','fit'],['Rendering diagnostics','diagnostics','code']];
 function showCommands(){
  openModal('Find a command',`<input id="commandSearch" class="command-search" type="search" placeholder="Try “insert chart” or “export”…" aria-label="Search commands"><div id="commandResults"></div>`,[],550);
  const draw=()=>{const query=$('#commandSearch').value.trim().toLowerCase(),items=COMMANDS.filter(c=>c[0].toLowerCase().includes(query));$('#commandResults').innerHTML=items.map(c=>`<button class="command-result" data-command-result="${c[1]}">${icon(c[2])}<span>${c[0]}</span>${c[3]?`<kbd>${c[3]}</kbd>`:''}</button>`).join('')||'<p class="modal-description">No matching commands.</p>';};draw();$('#commandSearch').addEventListener('input',draw);$('#commandSearch').addEventListener('keydown',event=>{if(event.key==='Enter'){const b=$('[data-command-result]',modal);if(b){event.preventDefault();modal.close();safeRun(command)(b.dataset.commandResult);}}if(event.key==='ArrowDown'){event.preventDefault();$('[data-command-result]',modal)?.focus();}});$('#commandResults').addEventListener('click',safeRun(async event=>{const b=event.target.closest('[data-command-result]');if(b){modal.close();await command(b.dataset.commandResult);}}));setTimeout(()=>$('#commandSearch')?.focus(),40);
@@ -1225,8 +1476,8 @@ async function exportSVG(){
  for(const e of flattenScene(s.elements)){
   const clip='clip'+idx++,transform=`translate(${e.x+e.w/2} ${e.y+e.h/2}) rotate(${e.rotation||0}) translate(${-e.w/2} ${-e.h/2})`,style=`fill="${color(e.fill,doc.theme)}" stroke="${e.strokeWidth?color(e.stroke,doc.theme):'none'}" stroke-width="${e.strokeWidth||0}"`;let body='';
   if(e.type==='text'){
-   ctx.font=fontCSS(e);const lines=wrapText(ctx,e.text,e.w-2*(e.padding||0)),lh=e.fontSize*(e.lineHeight||1.2),total=lines.length*lh,p=e.padding||0,x=e.align==='center'?e.w/2:e.align==='right'?e.w-p:p,top=e.valign==='middle'?Math.max(p,(e.h-total)/2):e.valign==='bottom'?Math.max(p,e.h-total-p):p;
-   body=`<text fill="${color(e.fill,doc.theme)}" font-family="${escapeHTML(e.fontFamily)}" font-size="${e.fontSize}" font-weight="${e.bold?'700':'400'}" font-style="${e.italic?'italic':'normal'}" text-decoration="${e.underline?'underline':'none'}" text-anchor="${e.align==='center'?'middle':e.align==='right'?'end':'start'}">${lines.map((line,i)=>`<tspan x="${x}" y="${top+i*lh+e.fontSize*.85}" xml:space="preserve">${escapeHTML(line)}</tspan>`).join('')}</text>`;
+   ctx.font=fontCSS(e,doc.theme);const lines=wrapText(ctx,e.text,e.w-2*(e.padding||0)),lh=e.fontSize*(e.lineHeight||1.2),total=lines.length*lh,p=e.padding||0,x=e.align==='center'?e.w/2:e.align==='right'?e.w-p:p,top=e.valign==='middle'?Math.max(p,(e.h-total)/2):e.valign==='bottom'?Math.max(p,e.h-total-p):p;
+   body=`<text fill="${color(e.fill,doc.theme)}" font-family="${escapeHTML(fontFamilyFor(e,doc.theme))}" font-size="${e.fontSize}" font-weight="${e.bold?'700':'400'}" font-style="${e.italic?'italic':'normal'}" text-decoration="${e.underline?'underline':'none'}" text-anchor="${e.align==='center'?'middle':e.align==='right'?'end':'start'}">${lines.map((line,i)=>`<tspan x="${x}" y="${top+i*lh+e.fontSize*.85}" xml:space="preserve">${escapeHTML(line)}</tspan>`).join('')}</text>`;
   }else if(e.type==='image')body=`<image href="${e.src}" width="${e.w}" height="${e.h}" preserveAspectRatio="xMidYMid ${e.fit==='contain'?'meet':'slice'}"/>`;
   else if(e.type==='chart'){const c=document.createElement('canvas');c.width=Math.ceil(e.w*2);c.height=Math.ceil(e.h*2);paintSlide2D(c,{bg:s.bg,elements:[{...e,x:0,y:0,rotation:0,opacity:1}]},{...doc,width:e.w,height:e.h},renderer.images,{scale:2});body=`<image href="${c.toDataURL('image/png')}" width="${e.w}" height="${e.h}"/>`;}
   else if(e.type==='ellipse')body=`<ellipse cx="${e.w/2}" cy="${e.h/2}" rx="${e.w/2}" ry="${e.h/2}" ${style}/>`;
@@ -1246,6 +1497,9 @@ async function command(cmd,anchor){
   throw new Error('References are read-only. Select an authored slide to edit.');
  if(state.editing&&!['copy','paste'].includes(cmd))finishTextEditing();
  if(cmd.startsWith('tab:')){state.tab=cmd.slice(4);renderRibbon();return;}
+ if(cmd.startsWith('insert-layout:')){editAdaptiveLayout(null,cmd.slice(14));return;}
+ if(cmd.startsWith('edit-adaptive:')){editAdaptiveLayout(cmd.slice(14));return;}
+ if(cmd.startsWith('detach-layout:')){store.transaction('Detach adaptive layout',()=>layouts.detach(store.doc,cmd.slice(14)));renderInspector();return;}
  if(cmd.startsWith('panel:')){state.panel=cmd.slice(6);state.showInspector=true;renderInspector();resizeStage();return;}
  if(cmd.startsWith('draw:')){setTool(cmd.slice(5));return;}
  if(cmd.startsWith('theme:')){store.transaction('Apply theme',()=>store.doc.theme=cmd.slice(6));renderInspector();return;}
@@ -1275,13 +1529,12 @@ async function command(cmd,anchor){
   case'delete-slide':if(!store.deleteSlide())toast('Keep at least one slide in your presentation.');renderInspector();break;
   case'rename-slide':openModal('Rename slide',`<div class="modal-form"><label>Slide name<input id="slideNameInput" maxlength="200" value="${escapeHTML(store.slide.name)}"></label></div>`,[{label:'Cancel',action:()=>{}},{label:'Rename',primary:true,action:()=>store.transaction('Rename slide',()=>store.slide.name=$('#slideNameInput').value.trim()||'Untitled slide')}]);break;
   case'layout-menu':showLayoutMenu(anchor);break;
-  case'reset-layout':openModal('Reset current slide layout',`<p class="modal-description">This replaces the objects on the current slide. The change can be undone.</p><div class="modal-form"><label>Layout<select id="resetLayout"><option value="title">Title slide</option><option value="content">Title and content</option><option value="split">Two columns</option><option value="quote">Quote</option><option value="blank">Blank</option></select></label></div>`,[{label:'Cancel',action:()=>{}},{label:'Reset layout',primary:true,action:()=>{store.transaction('Reset slide layout',()=>store.slide.elements=makeSlide($('#resetLayout').value).elements);store.select([]);}}]);break;
+  case'reset-layout':openModal('Reset current slide layout',`<p class="modal-description">This replaces the objects on the current slide. The change can be undone.</p><div class="modal-form"><label>Layout<select id="resetLayout"><option value="title">Title slide</option><option value="content">Title and content</option><option value="split">Two columns</option><option value="quote">Quote</option><option value="blank">Blank</option></select></label></div>`,[{label:'Cancel',action:()=>{}},{label:'Reset layout',primary:true,action:()=>{store.transaction('Reset slide layout',()=>{store.slide.elements=makeSlide($('#resetLayout').value).elements;delete store.slide.components;});store.select([]);}}]);break;
   case'insert-text':{const e=makeElement('text',{x:store.doc.width*.14,y:store.doc.height*.35,w:store.doc.width*.7,h:100,text:'Make your point.',fontSize:48});store.add(e);startTextEditing(e);break;}
   case'insert-image':replaceImageId=null;$('#imageFile').click();break;
   case'replace-image':if(store.selected[0]?.type==='image'){replaceImageId=store.selected[0].id;$('#imageFile').click();}break;
   case'insert-chart':{const e=makeElement('chart',{x:store.doc.width*.15,y:store.doc.height*.2,w:store.doc.width*.7,h:store.doc.height*.6,chartType:'bar',labels:['Q1','Q2','Q3','Q4'],values:[28,46,57,84],showValues:true,fill:'@accent'});store.add(e);break;}
   case'insert-table':{const e=makeElement('table',{x:store.doc.width*.12,y:store.doc.height*.24,w:store.doc.width*.76,h:store.doc.height*.46,fill:'@dark',fontSize:24,cells:[['Initiative','Owner','Status'],['Discover','Design team','In progress'],['Build','Engineering','Planned'],['Launch','Everyone','Up next']]});store.add(e);break;}
-  case'insert-diagram':insertDiagram();break;
   case'insert-number':store.add(makeElement('text',{x:store.doc.width-110,y:store.doc.height-60,w:70,h:35,fontSize:18,align:'right',text:String(store.doc.slides.indexOf(store.slide)+1),fill:'@muted',name:'Slide number (static)'}));break;
   case'insert-date':store.add(makeElement('text',{x:75,y:store.doc.height-60,w:450,h:35,fontSize:18,text:new Date().toLocaleDateString(undefined,{dateStyle:'long'}),fill:'@muted',name:'Date (static)'}));break;
   case'edit-data':if(store.selected[0]&&['chart','table'].includes(store.selected[0].type))editData(store.selected[0]);break;
@@ -1304,7 +1557,7 @@ async function command(cmd,anchor){
   case'toggle-snap':state.snap=!state.snap;toast(`Smart alignment guides ${state.snap?'on':'off'}.`);renderRibbon();break;
   case'toggle-notes':state.showNotes=!state.showNotes;$('#notesPanel').hidden=!state.showNotes;renderRibbon();resizeStage();break;
   case'toggle-inspector':state.showInspector=!state.showInspector;renderInspector();resizeStage();break;
-  case'toggle-dark':document.body.classList.toggle('dark');try{localStorage.setItem('aurelia-dark',document.body.classList.contains('dark')?'1':'0');}catch{}break;
+  case'toggle-dark':document.body.classList.toggle('dark');try{if(!publicationViewer)localStorage.setItem('aurelia-dark',document.body.classList.contains('dark')?'1':'0');}catch{}break;
   case'normal':if(modal.open)modal.close();state.showInspector=true;state.showNotes=true;$('#notesPanel').hidden=false;renderInspector();zoomTo('fit');break;
   case'sorter':showSorter();break;
   case'zoom-fit':zoomTo('fit');break;
@@ -1402,20 +1655,20 @@ document.addEventListener('keydown',safeRun(async event=>{
  if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();if(store.selected.length)store.deleteSelected();else if(document.activeElement?.closest('#thumbnails'))store.deleteSlide();return;}
  if(event.key===' '){event.preventDefault();state.space=true;viewport.classList.add('space-pan');return;}
  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)){
-  event.preventDefault();if(store.selected.length){const amount=event.shiftKey?10:1,dx=event.key==='ArrowLeft'?-amount:event.key==='ArrowRight'?amount:0,dy=event.key==='ArrowUp'?-amount:event.key==='ArrowDown'?amount:0;store.transaction('Nudge objects',()=>store.selected.forEach(e=>{if(!e.locked){e.x+=dx;e.y+=dy;}}));}
+  event.preventDefault();if(store.selected.length){if(store.selected.some(element=>layouts.member(store.slide,element.id))){toast('Use layout frame controls or detach for freeform geometry.');return;}const amount=event.shiftKey?10:1,dx=event.key==='ArrowLeft'?-amount:event.key==='ArrowRight'?amount:0,dy=event.key==='ArrowUp'?-amount:event.key==='ArrowDown'?amount:0;store.transaction('Nudge objects',()=>store.selected.forEach(e=>{if(!e.locked){e.x+=dx;e.y+=dy;}}));}
   else{const i=store.doc.slides.indexOf(store.slide),delta=['ArrowLeft','ArrowUp'].includes(event.key)?-1:1;store.activate(store.doc.slides[clamp(i+delta,0,store.doc.slides.length-1)].id);}return;
  }
  if(event.key==='Enter'&&store.selected.length===1&&store.selected[0].type==='text'){event.preventDefault();startTextEditing(store.selected[0]);}
  if(event.key==='Tab'){event.preventDefault();const els=store.slide.elements.filter(e=>!e.hidden);if(!els.length)return;const current=els.findIndex(e=>store.selection.has(e.id)),next=(current+(event.shiftKey?-1:1)+els.length)%els.length;store.select([els[next].id]);}
 }));
 document.addEventListener('keyup',event=>{if(event.key===' '){state.space=false;viewport.classList.remove('space-pan');}});
-window.addEventListener('beforeunload',event=>{if(store.pending)store.commit();if(store.revision!==lastPersistedRevision&&store.revision>0){persist();event.preventDefault();event.returnValue='';}});
+window.addEventListener('beforeunload',event=>{if(publicationViewer)return;if(store.pending)store.commit();if(store.revision!==lastPersistedRevision&&store.revision>0){persist();event.preventDefault();event.returnValue='';}});
 async function initialize(){
- hydrateIcons();try{if(localStorage.getItem('aurelia-dark')==='1')document.body.classList.add('dark');}catch{}
- const saved=await openStorage();if(saved){try{store.doc=validateDocument(saved);store.active=store.doc.slides[0].id;$('#saveText').textContent='Restored from this device';}catch(error){toast('The saved recovery copy could not be read. The example deck is open.',true);}}
+ hydrateIcons();try{if(!publicationViewer&&localStorage.getItem('aurelia-dark')==='1')document.body.classList.add('dark');}catch{}
+ const saved=await openStorage();if(saved){try{store.doc=validateDocument(saved);layouts.normalize(store.doc);store.active=store.doc.slides[0].id;$('#saveText').textContent='Restored from this device';}catch(error){toast('The saved recovery copy could not be read. The example deck is open.',true);}}
  syncUI();renderInspector();resizeStage();await renderer.init();resizeStage();scheduleThumbnails(true);
  new ResizeObserver(()=>resizeStage()).observe(viewport);
- window.Aurelia={version:'1.0.0',groundingContract:GROUNDING_CONTRACT,capabilities:[GROUNDING_CAPABILITY],store,state,renderer,command,validateDocument,resolveGrounding,makeElement,exportPPTX,exportReferencePPTX,setReferencePresentation,get referenceRevision(){return referencePresentation?.id_revision??null;},get referenceActive(){return activeReferenceSlide!==null;},importPPTX,createDemo,startTextEditing,finishTextEditing,resizeStage,THEMES,renderSlideImages,renderCount:()=>renderCount,ready:true};
+ window.Aurelia={version:'1.0.0',groundingContract:GROUNDING_CONTRACT,capabilities:[GROUNDING_CAPABILITY],store,state,renderer,command,THEMES,makeSlide,layouts,copySlide,layout:{fontCSS,wrapText,flattenScene,elementBounds,color,tableGeometry,fontFamilyFor},validateDocument,resolveGrounding,makeElement,exportPPTX,exportReferencePPTX,setReferencePresentation,get referenceRevision(){return referencePresentation?.id_revision??null;},get referenceActive(){return activeReferenceSlide!==null;},importPPTX,createDemo,startTextEditing,finishTextEditing,resizeStage,renderSlideImages,renderCount:()=>renderCount,ready:true};
  if(!saved)await persist();lastPersistedRevision=store.revision;
 }
 initialize().catch(error=>{console.error(error);toast('Initialization failed: '+error.message,true);$('#rendererStatus').textContent='Initialization error';});

@@ -1,3 +1,4 @@
+import {createLayouts,validateComponents,remapComponents,componentElementIds} from './layouts.js';
 /** Aurelia document/geometry/command kernel. No browser or renderer dependencies. */
 export const VERSION = 1;
 export const GROUNDING_CONTRACT = 3;
@@ -19,6 +20,10 @@ export const clone = value => structuredClone(value);
 export const uid = (prefix='e') => `${prefix}_${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)+Date.now().toString(36)}`;
 export const clamp = (n,a,b) => Math.max(a,Math.min(b,n));
 export const color = (value,theme='studio') => value?.startsWith('@') ? ((THEME_COLOR_TOKENS.includes(value.slice(1))&&THEMES[theme]?.[value.slice(1)]) || '#17313A') : (value || '#000000');
+export const fontFamilyFor=(element,theme='studio')=>element.fontRole==='heading'?(THEMES[theme]?.headingFont||'Arial'):element.fontRole==='body'?(THEMES[theme]?.bodyFont||'Arial'):(element.fontFamily||'Arial');
+let layoutTextMeasurer=null;
+export function configureLayoutMeasurement(measure){if(typeof measure!=='function')throw new Error('A text measurer is required.');layoutTextMeasurer=measure;}
+export const layouts=createLayouts({makeElement,uid,fontFamilyFor,setContent:updateElementContent,measureText:(...args)=>{if(!layoutTextMeasurer)throw new Error('Adaptive layout text measurement is unavailable.');return layoutTextMeasurer(...args);}});
 export const escapeHTML = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function makeElement(type='rect', props={}) {
   return { id:uid(), type, name:({text:'Text box',rect:'Rectangle',roundRect:'Rounded rectangle',ellipse:'Ellipse',line:'Line',triangle:'Triangle',diamond:'Diamond',arrow:'Arrow',star:'Star',image:'Picture',chart:'Chart',table:'Table'})[type]||type,
@@ -27,13 +32,13 @@ export function makeElement(type='rect', props={}) {
 }
 export function makeSlide(layout='blank', theme='studio') {
   const s={id:uid('s'),name:layout==='blank'?'Blank slide':'Untitled slide',bg:'@bg',notes:'',transition:'fade',duration:0.45,elements:[]};
-  if(layout==='title') s.elements=[makeElement('text',{name:'Title',x:88,y:215,w:1100,h:160,text:'A new perspective.',fontSize:92,bold:true}),makeElement('text',{name:'Subtitle',x:94,y:415,w:1000,h:80,text:'An idea worth sharing.',fontSize:28,fill:'@muted'})];
+  if(layout==='title') s.elements=[makeElement('text',{name:'Title',fontRole:'heading',x:88,y:215,w:1100,h:160,text:'A new perspective.',fontSize:92,bold:true}),makeElement('text',{name:'Subtitle',fontRole:'body',x:94,y:415,w:1000,h:80,text:'An idea worth sharing.',fontSize:28,fill:'@muted'})];
   if(layout==='content'||layout==='split') {
-    s.elements.push(makeElement('text',{name:'Title',x:78,y:65,w:1110,h:100,text:'Make your point.',fontSize:62,bold:true}));
-    s.elements.push(makeElement('text',{name:'Content',x:82,y:225,w:layout==='split'?515:1100,h:385,text:'Start with what matters.\n\nConnect the dots.\n\nGive your audience a reason to care.',fontSize:31,fill:'@muted'}));
+    s.elements.push(makeElement('text',{name:'Title',fontRole:'heading',x:78,y:65,w:1110,h:100,text:'Make your point.',fontSize:62,bold:true}));
+    s.elements.push(makeElement('text',{name:'Content',fontRole:'body',x:82,y:225,w:layout==='split'?515:1100,h:385,text:'Start with what matters.\n\nConnect the dots.\n\nGive your audience a reason to care.',fontSize:31,fill:'@muted'}));
     if(layout==='split')s.elements.push(makeElement('roundRect',{name:'Visual',x:660,y:222,w:530,h:380,fill:'@secondary',radius:24}));
   }
-  if(layout==='quote') s.elements=[makeElement('text',{x:90,y:110,w:180,h:180,text:'“',fontSize:180,fill:'@accent',fontFamily:'Georgia'}),makeElement('text',{name:'Quote',x:120,y:270,w:1000,h:240,text:'Great stories make\ncomplex ideas feel simple.',fontSize:64,fontFamily:'Georgia'}),makeElement('text',{x:125,y:570,w:700,h:50,text:'YOUR NAME  /  YOUR PERSPECTIVE',fontSize:18,fill:'@muted'})];
+  if(layout==='quote') s.elements=[makeElement('text',{x:90,y:110,w:180,h:180,text:'“',fontRole:'heading',fontSize:180,fill:'@accent',fontFamily:'Georgia'}),makeElement('text',{name:'Quote',fontRole:'heading',x:120,y:270,w:1000,h:240,text:'Great stories make\ncomplex ideas feel simple.',fontSize:64,fontFamily:'Georgia'}),makeElement('text',{x:125,y:570,w:700,h:50,text:'YOUR NAME  /  YOUR PERSPECTIVE',fontRole:'body',fontSize:18,fill:'@muted'})];
   return s;
 }
 export function makeDocument() { return {format:'aurelia',version:VERSION,grounding_contract:GROUNDING_CONTRACT,id:uid('deck'),title:'Untitled presentation',width:1280,height:720,theme:'studio',slides:[makeSlide('title')]}; }
@@ -104,6 +109,7 @@ function continueGrounding(element) {
   });
   return validateGrounding(element,annotations);
 }
+export function updateElementContent(element,props){const before=contentSignature(element);Object.assign(element,props);if('fontFamily'in props&&!('fontRole'in props))delete element.fontRole;if(contentSignature(element)!==before)element.grounding=continueGrounding(element);}
 export function validateGrounding(element, annotations, seen=new Set()) {
   if(!Array.isArray(annotations)||annotations.length>2000)throw new Error('Invalid grounding annotations.');
   if(annotations.length&&!['text','table'].includes(element.type))throw new Error('Only text and table objects can contain grounding.');
@@ -125,19 +131,25 @@ export function stripGrounding(doc,{keepContract=false}={}) {
   for(const slide of out.slides)for(const element of slide.elements){if(keepContract)element.grounding=[];else delete element.grounding;}
   return out;
 }
-export function copyElements(elements,{retainGrounding=true,offset=0,unlock=false}={}) {
+export function copyElements(elements,{retainGrounding=true,offset=0,unlock=false,idMap=null}={}) {
   const groups=new Map();return clone(elements).map(element=>{
-    element.id=uid();element.x+=offset;element.y+=offset;if(unlock)element.locked=false;
+    const previousId=element.id;element.id=uid();if(idMap)idMap.set(previousId,element.id);element.x+=offset;element.y+=offset;if(unlock)element.locked=false;
     element.grounding=retainGrounding?(element.grounding||[]).map(annotation=>({...annotation,id:uid('a')})):[];
     if(element.groupId){if(!groups.has(element.groupId))groups.set(element.groupId,uid('g'));element.groupId=groups.get(element.groupId);}
     return element;
   });
 }
+export function copySlide(slide,{retainGrounding=true,offset=0}={}){
+  const idMap=new Map(),elements=copyElements(slide.elements,{retainGrounding,offset,idMap}),out={...clone(slide),id:uid('s'),elements};
+  if(slide.components)out.components=remapComponents(slide.components,idMap,uid,offset);
+  for(const component of out.components||[])for(const element of elements)if(componentElementIds(component).includes(element.id))element.groupId=component.id;
+  return out;
+}
 // External files are content imports. No submitted evidence association is trusted.
 export function importExternalDocument(raw) {
   const out=clone(raw);out.grounding_contract=GROUNDING_CONTRACT;out.id=uid('deck');
   if(!Array.isArray(out.slides))throw new Error('Invalid presentation slides.');
-  out.slides=out.slides.map(slide=>({...slide,id:uid('s'),elements:copyElements(slide.elements,{retainGrounding:false})}));
+  out.slides=out.slides.map(slide=>copySlide(slide,{retainGrounding:false}));
   return validateDocument(out);
 }
 const VALID_TYPES=new Set(['rect','roundRect','ellipse','triangle','diamond','arrow','star','line','text','image','chart','table']);
@@ -150,7 +162,7 @@ function validateDataStyle(e,v){
 }
 function validateTableStyle(e,v){
   const cols=Math.max(1,...e.cells.map(r=>r.length));
-  if(Array.isArray(v.columnWidths)&&v.columnWidths.length===cols&&v.columnWidths.every(w=>Number.isFinite(+w)&&+w>0))e.columnWidths=v.columnWidths.map(w=>clamp(+w,0.01,1000));
+  if(Array.isArray(v.columnWidths)&&v.columnWidths.length===cols&&v.columnWidths.every(w=>Number.isFinite(+w)&&+w>0)){const max=Math.max(...v.columnWidths.map(Number));e.columnWidths=v.columnWidths.map(w=>max>1000?Math.max(Number.MIN_VALUE,+w/max*1000):+w);}
   if(Array.isArray(v.columnAlign)&&v.columnAlign.length===cols)e.columnAlign=v.columnAlign.map(a=>['left','center','right'].includes(a)?a:'left');
   if(Array.isArray(v.highlightRows))e.highlightRows=[...new Set(v.highlightRows.filter(r=>Number.isInteger(r)&&r>0&&r<e.cells.length))].sort((a,b)=>a-b);
   if(typeof v.banded==='boolean')e.banded=v.banded;
@@ -177,8 +189,11 @@ export function validateDocument(raw) {
       if(e.type==='image'){if(typeof v.src!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(v.src)||v.src.length>30000000)throw new Error('Pictures must be embedded PNG, JPEG or WebP files, at most 22 MB each.');e.src=v.src;e.fit=v.fit==='contain'?'contain':'cover';}
       if(e.type==='chart'){validateDataStyle(e,v);e.chartType=['bar','line','donut'].includes(v.chartType)?v.chartType:'bar';e.labels=(v.labels||['A','B','C']).slice(0,30).map(x=>String(x).slice(0,80));e.values=(v.values||[20,40,70]).slice(0,e.labels.length).map(x=>clamp(Number(x)||0,0,1e12));while(e.values.length<e.labels.length)e.values.push(0);e.showValues=v.showValues!==false;}
       if(e.type==='table'){if(!Array.isArray(v.cells)||!v.cells.length)throw new Error('Invalid table.');e.cells=v.cells.slice(0,30).map(r=>Array.isArray(r)?r.slice(0,12).map(c=>String(c).slice(0,1000)):['']);e.fontSize=clamp(+v.fontSize||22,8,100);validateDataStyle(e,v);validateTableStyle(e,v);}
+      if(['text','table','chart'].includes(e.type)&&['heading','body'].includes(v.fontRole))e.fontRole=v.fontRole;
       e.grounding=validateGrounding(e,v.grounding,annotationsSeen);return e;
-    });return out;
+    });
+    if(s.components!==undefined)out.components=validateComponents(s.components,out.elements,seen);
+    return out;
   });return d;
 }
 export function localPoint(e,p) {
@@ -219,7 +234,7 @@ export class Store {
   activate(id){if(!this.doc.slides.some(s=>s.id===id))return;this.active=id;this.selection.clear();this.emit('active');}
   snapshot(){return JSON.stringify({doc:this.doc,active:this.active});}
   begin(label='Edit'){if(!this.pending)this.pending={label,before:this.snapshot(),groundingAssignments:new Set()};}
-  commit(){if(!this.pending)return false;const {label,before,groundingAssignments}=this.pending;
+  commit(){if(!this.pending)return false;layouts.normalize(this.doc);const {label,before,groundingAssignments}=this.pending;
     const previous=new Map(JSON.parse(before).doc.slides.flatMap(slide=>slide.elements).map(element=>[element.id,element]));
     for(const element of this.doc.slides.flatMap(slide=>slide.elements)){
       const original=previous.get(element.id);
@@ -231,8 +246,8 @@ export class Store {
   restore(snapshot){const state=JSON.parse(snapshot);this.doc=state.doc;this.active=state.active;this.selection=new Set([...this.selection].filter(id=>this.slide.elements.some(e=>e.id===id)));this.revision++;this.emit('restore');}
   undo(){if(this.pending)this.commit();const cmd=this.past.pop();if(!cmd)return;this.future.push(cmd);this.restore(cmd.before);}
   redo(){const cmd=this.future.pop();if(!cmd)return;this.past.push(cmd);this.restore(cmd.after);}
-  replace(doc){this.doc=validateDocument(doc);this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('restore');}
-  setElementContent(element,props){const before=contentSignature(element);Object.assign(element,props);if(contentSignature(element)!==before)element.grounding=continueGrounding(element);}
+  replace(doc){const validated=validateDocument(doc);layouts.normalize(validated);this.doc=validated;this.active=this.doc.slides[0].id;this.selection.clear();this.past=[];this.future=[];this.pending=null;this.clipboard=null;this.revision++;this.emit('restore');}
+  setElementContent(element,props,document=this.doc){const slide=document.slides.find(item=>item.elements.some(value=>value.id===element.id));if(!slide)throw new Error('Unknown content element.');layouts.assertProperties(slide,[element.id],props);if(element.locked)throw new Error('Element is locked');updateElementContent(element,props);layouts.normalize(document);}
   normalizeGrounding(document){for(const element of document.slides.flatMap(slide=>slide.elements))element.grounding=continueGrounding(element);return document;}
   inspectGrounding(objectIds=null){
     if(objectIds!==null&&(!Array.isArray(objectIds)||objectIds.some(id=>!validIdentity(id))))throw new Error('Invalid grounding target IDs.');
@@ -253,24 +268,33 @@ export class Store {
     if(this.pending)apply();else this.transaction('Assign grounding',apply);
     return {assigned:validated.length};
   }
+  #copySelectionElements(selected){
+    const ids=new Set(selected.map(element=>element.id)),elements=new Map(this.slide.elements.map(element=>[element.id,element]));
+    for(const component of this.slide.components||[]){
+      const members=componentElementIds(component),visible=members.filter(id=>!elements.get(id).hidden);
+      if(visible.length&&visible.every(id=>ids.has(id)))for(const id of members)ids.add(id);
+    }
+    return this.slide.elements.filter(element=>ids.has(element.id));
+  }
   copySelected(){
-    this.clipboard={handle:uid('clip'),artifact_id:this.doc.id,elements:clone(this.selected)};
+    const elements=this.#copySelectionElements(this.selected),selectedIds=new Set(elements.map(element=>element.id));
+    this.clipboard={handle:uid('clip'),artifact_id:this.doc.id,elements:clone(elements),components:clone((this.slide.components||[]).filter(component=>componentElementIds(component).every(id=>selectedIds.has(id))))};
     // The public record contains content only. The opaque handle can recover the
     // native record exclusively in this editor and artifact.
-    return JSON.stringify({handle:this.clipboard.handle,elements:this.clipboard.elements.map(element=>{const out=clone(element);delete out.grounding;return out;})});
+    return JSON.stringify({handle:this.clipboard.handle,components:this.clipboard.components,elements:this.clipboard.elements.map(element=>{const out=clone(element);delete out.grounding;return out;})});
   }
   pasteObjects(payload=null){
     let record=this.clipboard,retainGrounding=record?.artifact_id===this.doc.id;
     if(payload!==null){
       const raw=JSON.parse(payload),handle=Array.isArray(raw)?null:raw.handle;
       if(!record||handle!==record.handle||!retainGrounding){
-        const temp=makeDocument();temp.slides[0].elements=(Array.isArray(raw)?raw:raw.elements).map(element=>({...element,grounding:[]}));
-        record={elements:importExternalDocument(temp).slides[0].elements};retainGrounding=false;
+        const temp=makeDocument();temp.slides[0].elements=(Array.isArray(raw)?raw:raw.elements).map(element=>({...element,grounding:[]}));if(raw.components)temp.slides[0].components=raw.components;
+        record=importExternalDocument(temp).slides[0];retainGrounding=false;
       }
     }
     if(!record?.elements.length)return [];
-    const elements=copyElements(record.elements,{retainGrounding,offset:28,unlock:true});
-    this.transaction('Paste objects',()=>this.slide.elements.push(...elements));this.select(elements.map(element=>element.id));return elements;
+    const idMap=new Map(),elements=copyElements(record.elements,{retainGrounding,offset:28,unlock:true,idMap}),components=remapComponents(record.components,idMap,uid,28);
+    this.transaction('Paste objects',()=>{this.slide.elements.push(...elements);if(components.length)(this.slide.components??=[]).push(...components);});this.select(elements.map(element=>element.id));return elements;
   }
   ackGrounding({receipts=[],invalidations=[],submitted_snapshot=null}={}){
     const normalized=[...receipts.map(receipt=>({...receipt,origin:validateGroundingOrigin(receipt.origin)})),...invalidations.map(invalidation=>({...invalidation,invalidated:true}))].map(item=>{
@@ -310,15 +334,15 @@ export class Store {
     if(updated)this.emit('grounding');return {updated};
   }
   add(element){this.transaction(`Insert ${element.type}`,()=>this.slide.elements.push(element));this.select([element.id]);return element;}
-  updateSelected(props,label='Format objects'){this.transaction(label,()=>{for(const e of this.selected)if(!e.locked)Object.assign(e,props);});}
-  deleteSelected(){this.transaction('Delete objects',()=>{this.slide.elements=this.slide.elements.filter(e=>!this.selection.has(e.id)||e.locked);});this.select([]);}
-  duplicateSelected(){const els=copyElements(this.selected.filter(e=>!e.locked),{offset:24});this.transaction('Duplicate objects',()=>this.slide.elements.push(...els));this.select(els.map(e=>e.id));}
+  updateSelected(props,label='Format objects'){layouts.assertProperties(this.slide,this.selected.map(element=>element.id),props);this.transaction(label,()=>{for(const e of this.selected)if(!e.locked){Object.assign(e,props);if('fontFamily'in props&&!('fontRole'in props))delete e.fontRole;}});}
+  deleteSelected(){layouts.assertFreeform(this.slide,this.selected.map(element=>element.id));this.transaction('Delete objects',()=>{this.slide.elements=this.slide.elements.filter(e=>!this.selection.has(e.id)||e.locked);});this.select([]);}
+  duplicateSelected(){const idMap=new Map(),els=copyElements(this.#copySelectionElements(this.selected.filter(e=>!e.locked)),{offset:24,idMap}),components=remapComponents(this.slide.components,idMap,uid,24);this.transaction('Duplicate objects',()=>{this.slide.elements.push(...els);if(components.length)(this.slide.components??=[]).push(...components);});this.select(els.map(e=>e.id));}
   addSlide(layout='blank'){const s=makeSlide(layout,this.doc.theme);this.transaction('New slide',()=>{const i=this.doc.slides.findIndex(s=>s.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);return s;}
-  duplicateSlide(){const s=clone(this.slide);s.id=uid('s');s.name+=' copy';s.elements=copyElements(s.elements);this.transaction('Duplicate slide',()=>{const i=this.doc.slides.findIndex(x=>x.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);}
+  duplicateSlide(){const s=copySlide(this.slide);s.name+=' copy';this.transaction('Duplicate slide',()=>{const i=this.doc.slides.findIndex(x=>x.id===this.active);this.doc.slides.splice(i+1,0,s);this.active=s.id;});this.select([]);}
   deleteSlide(){if(this.doc.slides.length===1)return false;this.transaction('Delete slide',()=>{const i=this.doc.slides.findIndex(s=>s.id===this.active);this.doc.slides.splice(i,1);this.active=this.doc.slides[Math.min(i,this.doc.slides.length-1)].id;});this.select([]);return true;}
   reorderSlide(from,to){this.transaction('Reorder slides',()=>{const [slide]=this.doc.slides.splice(from,1);this.doc.slides.splice(to,0,slide);});}
-  align(mode){const els=this.selected.filter(e=>!e.locked);if(!els.length)return;const b=els.length===1?{x:0,y:0,w:this.doc.width,h:this.doc.height}:unionBounds(els);this.transaction('Align objects',()=>{for(const e of els){const r=elementBounds(e);if(mode==='left')e.x+=b.x-r.x;if(mode==='center')e.x+=b.x+b.w/2-r.x-r.w/2;if(mode==='right')e.x+=b.x+b.w-r.x-r.w;if(mode==='top')e.y+=b.y-r.y;if(mode==='middle')e.y+=b.y+b.h/2-r.y-r.h/2;if(mode==='bottom')e.y+=b.y+b.h-r.y-r.h;}});}
-  distribute(axis){const es=this.selected.filter(e=>!e.locked).sort((a,b)=>elementBounds(a)[axis]-elementBounds(b)[axis]);if(es.length<3)return;const k=axis==='x'?'w':'h',bs=es.map(elementBounds),total=bs.reduce((n,b)=>n+b[k],0),gap=(bs.at(-1)[axis]+bs.at(-1)[k]-bs[0][axis]-total)/(es.length-1);this.transaction('Distribute objects',()=>{let p=bs[0][axis];es.forEach((e,i)=>{e[axis]+=p-bs[i][axis];p+=bs[i][k]+gap;});});}
+  align(mode){layouts.assertFreeform(this.slide,this.selected.map(element=>element.id));const els=this.selected.filter(e=>!e.locked);if(!els.length)return;const b=els.length===1?{x:0,y:0,w:this.doc.width,h:this.doc.height}:unionBounds(els);this.transaction('Align objects',()=>{for(const e of els){const r=elementBounds(e);if(mode==='left')e.x+=b.x-r.x;if(mode==='center')e.x+=b.x+b.w/2-r.x-r.w/2;if(mode==='right')e.x+=b.x+b.w-r.x-r.w;if(mode==='top')e.y+=b.y-r.y;if(mode==='middle')e.y+=b.y+b.h/2-r.y-r.h/2;if(mode==='bottom')e.y+=b.y+b.h-r.y-r.h;}});}
+  distribute(axis){layouts.assertFreeform(this.slide,this.selected.map(element=>element.id));const es=this.selected.filter(e=>!e.locked).sort((a,b)=>elementBounds(a)[axis]-elementBounds(b)[axis]);if(es.length<3)return;const k=axis==='x'?'w':'h',bs=es.map(elementBounds),total=bs.reduce((n,b)=>n+b[k],0),gap=(bs.at(-1)[axis]+bs.at(-1)[k]-bs[0][axis]-total)/(es.length-1);this.transaction('Distribute objects',()=>{let p=bs[0][axis];es.forEach((e,i)=>{e[axis]+=p-bs[i][axis];p+=bs[i][k]+gap;});});}
   arrange(mode){this.transaction('Arrange objects',()=>{const list=this.slide.elements,chosen=list.filter(e=>this.selection.has(e.id));if(mode==='front')this.slide.elements=[...list.filter(e=>!this.selection.has(e.id)),...chosen];else if(mode==='back')this.slide.elements=[...chosen,...list.filter(e=>!this.selection.has(e.id))];else if(mode==='forward'){for(let i=list.length-2;i>=0;i--)if(this.selection.has(list[i].id)&&!this.selection.has(list[i+1].id))[list[i],list[i+1]]=[list[i+1],list[i]];}else{for(let i=1;i<list.length;i++)if(this.selection.has(list[i].id)&&!this.selection.has(list[i-1].id))[list[i],list[i-1]]=[list[i-1],list[i]];}});}
   group(){if(this.selected.length<2)return;this.updateSelected({groupId:uid('g')},'Group objects');}
   ungroup(){this.updateSelected({groupId:null},'Ungroup objects');}
