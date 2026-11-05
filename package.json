@@ -9,7 +9,7 @@
     "start": "python3 -m http.server 8000",
     "build": "node scripts/build.mjs",
     "build:site": "node scripts/build.mjs --site",
-    "check": "node --check src/layouts.js && node --check src/core.js && node --check src/renderer.js && node --check src/demo.js && node --check src/icons.js && node --check src/pptx.js && node --check src/app.js"
+    "check": "node --check src/styles.js && node --check src/components.js && node --check src/layouts.js && node --check src/core.js && node --check src/renderer.js && node --check src/demo.js && node --check src/icons.js && node --check src/pptx.js && node --check src/app.js"
   },
   "engines": {
     "node": ">=22"

@@ -78,21 +78,47 @@ The model or user chooses a layout and supplies content. The editor arranges it.
 The catalog includes a horizontal process with 2–6 steps, a two-way comparison,
 1–4 key figures, and a takeaway supported by points or an existing chart.
 
-Each layout keeps ordinary editable objects as its only content source. The slide
-stores their membership and order. Text and theme changes reflow those objects in
-the same undo transaction. Copy and native import remap their references together.
-Choose **Detach layout** to edit their geometry or managed appearance freely.
-Locked members must be unlocked before changing their layout.
+Each layout keeps ordinary editable objects as its only content source. Components
+reference those objects by stable IDs and preserve their order, notes and source
+annotations through reflow. Shared measured panels, statistics and evidence points
+use one slide-area calculation. Empty titles take no space; wrapping titles reduce
+the body area. The bottom 7% is reserved for sources. A `null` component frame uses
+automatic margins; an explicit frame defines an outer region containing both title
+and body. There is no automatic packing or nested component tree.
 
-Colors use theme tokens. Text can use the `heading` or `body` font role. Choosing
-an explicit font removes that role. All text measurement and output use the same
-resolved font. A layout reports overflow when it cannot fit its content at a
-readable size; it does not remove text or split slides automatically.
+**Presentation style** controls heading/body fonts, six semantic text sizes, line
+height, margins, padding and spacing. Overrides persist in `document.style` and
+survive theme changes. Resolution follows theme defaults, deck overrides, then
+local typography overrides. Managed text edits retain local overrides; **Reset to
+presentation style** removes them. **Detach layout** freezes resolved text styles
+and geometry for freeform editing. Explicit freeform fonts remain explicit;
+freeform heading/body font roles follow deck font overrides. Locked members must
+be unlocked before changing their layout.
 
-The native browser API exposes `layouts.create`, `update`, `detach`, `normalize`,
-and `inspect`. Content fields follow the chosen layout type. Updates keep existing
-item IDs to retain their text and associations. Layout output remains editable in
-PowerPoint, but automatic reflow belongs to the native editor.
+A layout reports its component ID and fit problem when content cannot fit at the
+18 px readable minimum. It retains all text and never shrinks below that minimum
+or splits slides automatically. Measurement, rendering, inspection and PowerPoint
+export use the same resolved typography. PowerPoint objects remain editable;
+automatic reflow belongs to the native editor.
+
+The current native document and component format is version 2. Opening version 1
+converts deterministically in memory before capturing the loaded baseline, without
+an undo entry or saved revision. Standard frames become automatic; custom regions,
+nondefault local typography, freeform content, IDs and sources are preserved.
+Conversion is idempotent, and unsupported formats or corrupt memberships fail.
+Opening alone does not save the conversion; viewers never write it.
+
+The browser API exposes `layouts.create`, `update`, `detach`, `normalize`, `inspect`
+and `area`. `area.frame` is the measured body; `area.region` and inspection's
+`effective_frame` are the outer region. `area.footer` is the shared source boundary.
+Content updates keep existing item IDs to retain their text and associations.
+`resolvePresentationStyle(document)` returns effective values;
+`setPresentationStyle(document, patch, {reset})` merges overrides, clears individual
+fields passed as `null`, and returns resolved style plus overflow diagnostics.
+`Store.setPresentationStyle` and `Store.resetSelectedTypography` each create one
+undo step. `STYLE_FIELDS` and `PRESENTATION_FONTS` define the supported controls.
+`Store.replace` emits `load` for hydration; authored commits and undo/redo emit
+`commit` and `restore`, allowing hosts to keep opening separate from autosave.
 
 Table display, diagnostics, and PowerPoint export share `tableGeometry` and the
 same native cell expansion. Hosts should consume this geometry rather than infer

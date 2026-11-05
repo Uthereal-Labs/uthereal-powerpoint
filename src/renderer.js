@@ -39,7 +39,7 @@ fn distance(p:vec2f,h:vec2f,kind:u32,r:f32)->f32 {
 @fragment fn textureFragment(v:Vertex)->@location(0) vec4f {return textureSample(tile,textureSampler,v.local)*items[v.index].transform.z;}
 `;
 export function rgba(value,theme){const c=color(value,theme);if(c==='none')return[0,0,0,0];const h=c.slice(1);return[parseInt(h.slice(0,2),16)/255,parseInt(h.slice(2,4),16)/255,parseInt(h.slice(4,6),16)/255,h.length===8?parseInt(h.slice(6,8),16)/255:1];}
-export function fontCSS(e,theme='studio'){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${fontFamilyFor(e,theme)}", sans-serif`;}
+export function fontCSS(e,theme='studio',style={}){return `${e.italic?'italic ':''}${e.bold?'700':'400'} ${e.fontSize||24}px "${fontFamilyFor(e,theme,style)}", sans-serif`;}
 export function wrapText(ctx,text,maxWidth){
   const lines=[];maxWidth=Math.max(1,maxWidth);
   for(const para of String(text).replace(/\r\n?/g,'\n').split('\n')){
@@ -108,7 +108,7 @@ export function expandElement(e){
     txt(labels[i]||'',x,top+H+10,bw,44,{fontSize:18,align:'center'});
   });return out;
 }
-export function flattenScene(elements){return elements.filter(e=>!e.hidden).flatMap(expandElement);}
+export function flattenScene(elements,theme=null,style={}){const leaves=elements.filter(e=>!e.hidden).flatMap(expandElement);return theme?leaves.map(e=>e.fontRole?{...e,fontFamily:fontFamilyFor(e,theme,style),fontRole:undefined}:e):leaves;}
 export class ImagePool{
   constructor(onLoad=()=>{}){this.items=new Map();this.onLoad=onLoad;}
   get(src){if(this.items.has(src))return this.items.get(src);const image=new Image();image.onload=()=>this.onLoad();image.onerror=()=>this.onLoad();image.src=src;this.items.set(src,image);return image;}
@@ -133,7 +133,7 @@ export function drawLeaf2D(ctx,e,theme,images){
 }
 export function paintSlide2D(canvas,slide,doc,images,{scale=1,ignoreId=null}={}){
   const ctx=canvas.getContext('2d');ctx.save();ctx.setTransform(scale,0,0,scale,0,0);ctx.clearRect(0,0,doc.width,doc.height);ctx.fillStyle=color(slide.bg,doc.theme);ctx.fillRect(0,0,doc.width,doc.height);
-  for(const e of flattenScene(slide.elements))if(e.id!==ignoreId)drawLeaf2D(ctx,e,doc.theme,images);ctx.restore();
+  for(const e of flattenScene(slide.elements,doc.theme,doc.style))if(e.id!==ignoreId)drawLeaf2D(ctx,e,doc.theme,images);ctx.restore();
 }
 function tileSignature(e,theme,resolution){
   if(e.type==='image')return `${e.id}|${e.w}|${e.h}|${e.fit}|${e.src.length}|${resolution}`;
@@ -183,7 +183,7 @@ export class SceneRenderer{
     if(this.mode==='initializing'||this.disposed)return;const start=performance.now();this.frame++;this.lastStats.uploads=0;
     const width=Math.max(1,Math.round(cssWidth*dpr)),height=Math.max(1,Math.round(cssHeight*dpr));if(this.canvas.width!==width||this.canvas.height!==height){this.canvas.width=width;this.canvas.height=height;}
     if(this.mode==='canvas'){paintSlide2D(this.canvas,slide,doc,this.images,{scale:width/doc.width,ignoreId});this.lastStats={...this.lastStats,ms:performance.now()-start,objects:slide.elements.length,draws:slide.elements.length};return;}
-    const elements=flattenScene(slide.elements).filter(e=>e.id!==ignoreId);this.ensureCapacity(elements.length||1);const data=this.data;
+    const elements=flattenScene(slide.elements,doc.theme,doc.style).filter(e=>e.id!==ignoreId);this.ensureCapacity(elements.length||1);const data=this.data;
     elements.forEach((e,i)=>{const n=i*20,a=(e.rotation||0)*Math.PI/180;data.set([e.x,e.y,e.w,e.h,Math.cos(a),Math.sin(a),e.opacity??1,SHAPE_IDS[e.type]??0,...rgba(e.fill,doc.theme),...rgba(e.stroke||'none',doc.theme),e.radius||0,e.strokeWidth||0,0,0],n);});
     this.device.queue.writeBuffer(this.uniform,0,new Float32Array([doc.width,doc.height,width,height]));if(elements.length)this.device.queue.writeBuffer(this.instances,0,data.buffer,0,elements.length*80);
     const encoder=this.device.createCommandEncoder({label:'Aurelia frame'}),clear=rgba(slide.bg,doc.theme),pass=encoder.beginRenderPass({colorAttachments:[{view:this.context.getCurrentTexture().createView(),clearValue:{r:clear[0],g:clear[1],b:clear[2],a:1},loadOp:'clear',storeOp:'store'}]});let draws=0;
