@@ -97,7 +97,7 @@ export function createLayouts({makeElement,uid,fontFamilyFor,setContent,measureT
         overflow||=frame.w<520*sx||height<300*sy;
       }else{
         let y=contentY;
-        for(const row of rows){const height=textHeight(row.text_id,frame.w-28);textBox(row.text_id,frame.x+28,y,frame.w-28,height,{fill:'@muted'});place(row.dot_id,{x:frame.x+2,y:y+9,w:8,h:8,fill:'@accent'});y+=height+20;}
+        for(const row of rows){const height=textHeight(row.text_id,frame.w-28);textBox(row.text_id,frame.x+28,y,frame.w-28,height,{fill:'@ink'});place(row.dot_id,{x:frame.x+2,y:y+9,w:8,h:8,fill:'@accent'});y+=height+20;}
         overflow||=y-20>frame.y+frame.h;
       }
     }else{
@@ -109,9 +109,9 @@ export function createLayouts({makeElement,uid,fontFamilyFor,setContent,measureT
       rows.forEach((row,index)=>{
         const x=frame.x+index*(width+gap),y=frame.y,emphasized=row.id===component.emphasis_step_id;
         place(row.panel_id,{x,y,w:Math.max(1,width),h:height,fill:emphasized?'@dark':'@surface',radius:12});
-        if(component.type==='process')textBox(row.number_id,x+padding,y+padding,inner,22,{text:String(index+1),fontSize:18,fill:emphasized?'@light':'@accent'});
+        if(component.type==='process')textBox(row.number_id,x+padding,y+padding,inner,22,{text:String(index+1),fontSize:18,fill:emphasized?'@light':'@ink'});
         let textY=y+padding+headingOffset;
-        slots.forEach((key,slotIndex)=>{const value=get(row[key]).text,height=metrics[index][slotIndex];textBox(row[key],x+padding,textY,inner,height,{fill:emphasized?'@light':key==='value_id'?'@accent':slotIndex===0||key==='label_id'?'@ink':'@muted',hidden:!value});if(value)textY+=height+10;});
+        slots.forEach((key,slotIndex)=>{const value=get(row[key]).text,height=metrics[index][slotIndex];textBox(row[key],x+padding,textY,inner,height,{fill:emphasized?'@light':'@ink',hidden:!value});if(value)textY+=height+10;});
         if(component.type==='process')place(row.connector_id,{x:x+width+6,y:y+height/2-8,w:gap-12,h:16,fill:'@accent',hidden:index===rows.length-1});
       });
       overflow||=width<2*padding+18||height>frame.h;
