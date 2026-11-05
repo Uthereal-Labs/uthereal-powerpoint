@@ -16,16 +16,16 @@ Open http://localhost:8000/ for the standalone application or http://localhost:8
 
 ## Develop and test
 
-Node.js 22 or newer is required for the build and kernel tests; no `npm install` is necessary.
+Node.js 22 or newer is required for the build and kernel tests; no `pnpm install` is necessary.
 
 ```sh
 npm test
-npm run check
-npm run build
-npm run build:site
+pnpm check
+pnpm build
+pnpm build:site
 ```
 
-`npm run build` deterministically regenerates the single-file `index.html` from `dev.html` and the six source modules. `npm run build:site` also stages only the deployable application in `_site/`.
+`pnpm build` deterministically regenerates the single-file `index.html` from `dev.html` and the six source modules. `pnpm build:site` also stages only the deployable application in `_site/`.
 
 ## Features
 
@@ -56,7 +56,7 @@ npm run build:site
 
 The renderer preserves painter ordering, batches consecutive compatible shapes, grows instance buffers geometrically, and renders on demand. Browser text shaping/rasterization feeds cached GPU textures. Texture caching has a 96 MB soft budget. Moving a text box does not require rerasterizing its contents. Pointer gestures are single undoable transactions.
 
-Text elements may carry optional `textColors` spans (`start`, `end`, `fill`), ordered and non-overlapping in UTF-16 offsets into the unchanged plain `text`. Editing rebases these ranges; rendering, native files, SVG and editable PPTX output retain them. Documents without spans keep their existing shape.
+Text elements may carry optional `textColors` spans (`start`, `end`, `fill`), ordered and non-overlapping in UTF-16 offsets into the unchanged plain `text`. Editing rebases these ranges; rendering, native files, SVG and editable PPTX output retain them. Documents without spans keep their existing shape. Whole-box colors on managed text are local typography overrides; resetting to presentation style clears those overrides and inline colors. Palette actions and typing use the document undo history.
 
 ## GitHub Pages
 
